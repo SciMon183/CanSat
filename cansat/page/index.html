@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Telemetria CanSat</title>
+    <link rel="preconnect" href="https://unpkg.com" />
+    <link rel="preconnect" href="https://tile.openstreetmap.org" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand__title">Telemetria CanSat</div>
+        <div class="brand__subtitle">Podgląd danych z czujników i GPS (bez sterowania)</div>
+      </div>
+      <div class="connection">
+        <div class="status" id="connStatus" data-kind="idle">
+          <span class="dot" aria-hidden="true"></span>
+          <span class="label">Brak połączenia</span>
+        </div>
+        <div class="ws">
+          <label class="ws__label" for="sourceMode">Źródło</label>
+          <select id="sourceMode" class="ws__input" aria-label="Wybór źródła danych">
+            <option value="ws">WebSocket (na żywo)</option>
+            <option value="http">HTTP API (RPi / stacja)</option>
+          </select>
+
+          <label class="ws__label" for="wsUrl">WS</label>
+          <input
+            id="wsUrl"
+            class="ws__input"
+            type="url"
+            inputmode="url"
+            placeholder="ws://localhost:8080"
+            autocomplete="off"
+            spellcheck="false"
+          />
+
+          <label class="ws__label" for="httpBaseUrl">HTTP</label>
+          <input
+            id="httpBaseUrl"
+            class="ws__input"
+            type="url"
+            inputmode="url"
+            placeholder="http://raspberrypi.local:8081"
+            autocomplete="off"
+            spellcheck="false"
+          />
+
+          <button id="connect" class="btn" type="button">Połącz</button>
+          <button id="disconnect" class="btn btn--secondary" type="button" disabled>Rozłącz</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <div class="panel__header">
+          <h2>Aktualne wartości</h2>
+          <div class="meta">
+            <div class="meta__item">
+              <span class="meta__label">Ostatnia ramka</span>
+              <span class="meta__value" id="lastFrameTs">—</span>
+            </div>
+            <div class="meta__item">
+              <span class="meta__label">DT millis()</span>
+              <span class="meta__value" id="lastMillis">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="cards" id="cards"></div>
+
+        <details class="help">
+          <summary>Format danych i zasady</summary>
+          <div class="help__content">
+            <ul>
+              <li><b>DT</b> – ramka z czujników w formacie: <code>DT | millis() | temp_BMP | press_BMP | temp_SHT | hum_SHT | co2_SCD | air_SPG | wart_fotorezystor</code></li>
+              <li><b>NA</b> oznacza „niedostępne” i jest wyświetlane jako <code>—</code>.</li>
+              <li><b>LOG</b> – zdarzenia (np. <code>LOG | OtwarciePlikuNaKarcieSD</code>) pojawiają się w tabeli i logu.</li>
+              <li><b>GPS</b> – pozycja; obsługiwane formaty: <code>GPS | lat=50.1234 | lon=19.9876</code> lub <code>GPS | 50.1234 | 19.9876</code>.</li>
+              <li><b>START</b> – ignorowane.</li>
+            </ul>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel">
+        <div class="panel__header">
+          <h2>Mapa</h2>
+          <div class="meta">
+            <div class="meta__item">
+              <span class="meta__label">GPS</span>
+              <span class="meta__value" id="gpsText">—</span>
+            </div>
+          </div>
+        </div>
+        <div id="map" class="map" role="img" aria-label="Mapa z pozycją CanSat"></div>
+      </section>
+
+      <section class="panel panel--wide">
+        <div class="panel__header">
+          <h2>Ostatnie wpisy</h2>
+          <div class="actions">
+            <input id="fileInput" class="file" type="file" accept=".txt,.log,.csv" />
+            <button id="clear" class="btn btn--secondary" type="button">Wyczyść</button>
+          </div>
+        </div>
+
+        <div class="split">
+          <div class="tableWrap" aria-label="Tabela telemetrii">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Typ</th>
+                  <th>millis()</th>
+                  <th>temp_BMP (°C)</th>
+                  <th>press_BMP (hPa)</th>
+                  <th>temp_SHT (°C)</th>
+                  <th>hum_SHT (%)</th>
+                  <th>co2_SCD (ppm)</th>
+                  <th>air_SPG</th>
+                  <th>foto</th>
+                  <th>GPS lat</th>
+                  <th>GPS lon</th>
+                  <th>Treść</th>
+                  <th>Czas</th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </div>
+
+          <div class="log" aria-label="Log zdarzeń">
+            <div class="log__header">Log</div>
+            <pre class="log__body" id="log"></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div>
+        Wskazówka: jeśli uruchamiasz lokalnie, użyj prostego serwera (np. <code>python -m http.server</code>),
+        żeby mapa działała poprawnie.
+      </div>
+    </footer>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
