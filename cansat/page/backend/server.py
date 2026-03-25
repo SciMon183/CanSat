@@ -5,66 +5,107 @@ import json
 import os
 import sqlite3
 import time
+from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DB_PATH = os.environ.get("TELEMETRY_DB", os.path.join(ROOT_DIR, "telemetry.db"))
+# MariaDB / MySQL connection (read-only UI)
+DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
+DB_PORT = int(os.environ.get("DB_PORT", "3306"))
+DB_USER = os.environ.get("DB_USER", "root")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
+DB_NAME = os.environ.get("DB_NAME", "")
+
+DT_TABLE = os.environ.get("DT_TABLE", "DT")
+GPS_TABLE = os.environ.get("GPS_TABLE", "GPS")
+DTP_TABLE = os.environ.get("DTP_TABLE", "DTP")
 
 
 def now_ts() -> str:
   return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 
 
-def db_connect() -> sqlite3.Connection:
-  conn = sqlite3.connect(DB_PATH)
-  conn.row_factory = sqlite3.Row
-  return conn
+def _ensure_driver():
+  # Try common drivers. The UI will only work if one of these is installed.
+  # Typical commands on target machine:
+  #   pip3 install pymysql
+  #   pip3 install mariadb
+  #   pip3 install mysql-connector-python
+  for mod in ("pymysql", "mariadb", "mysql.connector"):
+    try:
+      parts = mod.split(".")
+      if len(parts) == 1:
+        __import__(mod)
+      else:
+        __import__(parts[0])
+      return mod
+    except Exception:
+      continue
+  return None
+
+
+def _format_ts(v) -> str | None:
+  if v is None:
+    return None
+  if isinstance(v, datetime):
+    return v.strftime("%Y-%m-%d %H:%M:%S")
+  return str(v)
+
+
+def _rows_to_dicts(cur, rows):
+  # Different MariaDB/MySQL drivers return rows either as dict-like objects or tuples.
+  if not rows:
+    return []
+  if isinstance(rows[0], dict):
+    return rows
+  desc = [c[0] for c in (cur.description or [])]
+  out = []
+  for r in rows:
+    if isinstance(r, dict):
+      out.append(r)
+    else:
+      out.append({desc[i]: r[i] for i in range(min(len(desc), len(r)))})
+  return out
+
+
+def db_connect():
+  driver = _ensure_driver()
+  if not driver:
+    raise RuntimeError(
+      "Brak sterownika do MariaDB w Pythonie. Zainstaluj np. `pymysql` albo `mariadb` albo `mysql-connector-python`."
+    )
+
+  if driver == "pymysql":
+    import pymysql
+
+    return pymysql.connect(
+      host=DB_HOST,
+      port=DB_PORT,
+      user=DB_USER,
+      password=DB_PASSWORD,
+      database=DB_NAME,
+      cursorclass=pymysql.cursors.DictCursor,
+      autocommit=True,
+    )
+
+  if driver == "mariadb":
+    import mariadb
+
+    # mariadb-python-client zwraca mapy w zaleznosci od ustawien; najszybciej: DictCursor przez `cursor()`.
+    conn = mariadb.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, database=DB_NAME)
+    return conn
+
+  # mysql.connector
+  import mysql.connector
+
+  return mysql.connector.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, database=DB_NAME)
 
 
 def db_init() -> None:
-  # Read-only UI: zakładamy, że dane są już wrzucane do DB przez inny proces.
-  # Ten backend tworzy tylko tabele, jeśli ich jeszcze nie ma.
-  with db_connect() as conn:
-    conn.execute(
-      """
-      CREATE TABLE IF NOT EXISTS DT (
-        TS TIMESTAMP DEFAULT CURRENT_TIMESTAMP PRIMARY KEY,
-        millis BIGINT,
-        temp_BMP VARCHAR(16),
-        temp_SHT VARCHAR(16),
-        hum_SHT VARCHAR(16),
-        cot_SCD VARCHAR(16),
-        air_SPG VARCHAR(16),
-        metan INT,
-        wartoscFotor INT
-      )
-      """
-    )
-    conn.execute(
-      """
-      CREATE TABLE IF NOT EXISTS GPS (
-        TS TIMESTAMP DEFAULT CURRENT_TIMESTAMP PRIMARY KEY,
-        millis BIGINT,
-        latitude DOUBLE,
-        longitude DOUBLE,
-        distanceToHome BIGINT,
-        courseToHome DOUBLE,
-        satellites INT
-      )
-      """
-    )
-    conn.execute(
-      """
-      CREATE TABLE IF NOT EXISTS DTP (
-        TS TIMESTAMP DEFAULT CURRENT_TIMESTAMP PRIMARY KEY,
-        refTEMP DOUBLE,
-        press_BMP VARCHAR(16)
-      )
-      """
-    )
-    conn.commit()
+  # Read-only UI: nie tworzymy nic w bazie.
+  return
 
 
 def split_pipes(line: str) -> list[str]:
@@ -177,10 +218,10 @@ def insert_records(lines: list[str]) -> int:
 
 def fetch_latest() -> dict:
   out: dict = {"dt": None, "gps": None, "logs": []}
-  with db_connect() as conn:
+  conn = db_connect()
+  try:
     # DT + DTP (ciśnienie z DTP dopięte do najbliższego poprzedniego timestampu DT).
-    dt = conn.execute(
-      """
+    sql_dt = f"""
       SELECT
         dt.TS as ts,
         dt.millis as millis,
@@ -192,72 +233,87 @@ def fetch_latest() -> dict:
         dt.wartoscFotor as wartoscFotor,
         (
           SELECT dtp.press_BMP
-          FROM DTP dtp
+          FROM {DTP_TABLE} dtp
           WHERE dtp.TS <= dt.TS
           ORDER BY dtp.TS DESC
           LIMIT 1
         ) as press_BMP,
         (
           SELECT dtp.refTEMP
-          FROM DTP dtp
+          FROM {DTP_TABLE} dtp
           WHERE dtp.TS <= dt.TS
           ORDER BY dtp.TS DESC
           LIMIT 1
         ) as refTEMP
-      FROM DT dt
+      FROM {DT_TABLE} dt
       ORDER BY dt.TS DESC
       LIMIT 1
-      """
-    ).fetchone()
+    """
+
+    cur = conn.cursor()
+    cur.execute(sql_dt)
+    dt = cur.fetchone()
+    if dt is not None and not isinstance(dt, dict):
+      desc = [c[0] for c in (cur.description or [])]
+      dt = {desc[i]: dt[i] for i in range(min(len(desc), len(dt)))}
 
     if dt:
-      ref_tmp = dt["refTEMP"]
+      ref_tmp = dt.get("refTEMP")
       ref_msg = "" if ref_tmp is None else f"refTEMP={ref_tmp}"
       out["dt"] = {
-        "ts": dt["ts"],
-        "millis": dt["millis"],
-        "temp_BMP": dt["temp_BMP"],
-        "press_BMP": dt["press_BMP"],
-        "temp_SHT": dt["temp_SHT"],
-        "hum_SHT": dt["hum_SHT"],
+        "ts": _format_ts(dt.get("ts")),
+        "millis": dt.get("millis"),
+        "temp_BMP": dt.get("temp_BMP"),
+        "press_BMP": dt.get("press_BMP"),
+        "temp_SHT": dt.get("temp_SHT"),
+        "hum_SHT": dt.get("hum_SHT"),
         # UI oczekuje `co2_SCD`, a w Twojej bazie jest `cot_SCD`.
-        "co2_SCD": dt["cot_SCD"],
-        "air_SPG": dt["air_SPG"],
-        "foto": dt["wartoscFotor"],
+        "co2_SCD": dt.get("cot_SCD"),
+        "air_SPG": dt.get("air_SPG"),
+        "foto": dt.get("wartoscFotor"),
         "message": ref_msg,
         "raw": "",
       }
 
-    gps = conn.execute(
-      """
+    sql_gps = f"""
       SELECT
         gps.TS as ts,
         gps.millis as millis,
         gps.latitude as latitude,
         gps.longitude as longitude
-      FROM GPS gps
+      FROM {GPS_TABLE} gps
       ORDER BY gps.TS DESC
       LIMIT 1
-      """
-    ).fetchone()
+    """
+    cur.execute(sql_gps)
+    gps = cur.fetchone()
+    if gps is not None and not isinstance(gps, dict):
+      desc = [c[0] for c in (cur.description or [])]
+      gps = {desc[i]: gps[i] for i in range(min(len(desc), len(gps)))}
     if gps:
       out["gps"] = {
-        "ts": gps["ts"],
-        "millis": gps["millis"],
-        "lat": gps["latitude"],
-        "lon": gps["longitude"],
+        "ts": _format_ts(gps.get("ts")),
+        "millis": gps.get("millis"),
+        "lat": gps.get("latitude"),
+        "lon": gps.get("longitude"),
         "raw": "",
       }
+  finally:
+    try:
+      conn.close()
+    except Exception:
+      pass
 
   return out
 
 
 def fetch_recent(limit: int = 250) -> list[dict]:
   limit = max(1, min(2000, int(limit)))
-  with db_connect() as conn:
-    # Historia: DT + GPS (ciśnienie dopięte z DTP do każdego wiersza DT).
-    dt_rows = conn.execute(
-      """
+  conn = db_connect()
+  try:
+    cur = conn.cursor()
+
+    sql_dt = f"""
       SELECT
         dt.TS as ts,
         dt.millis as millis,
@@ -269,55 +325,54 @@ def fetch_recent(limit: int = 250) -> list[dict]:
         dt.wartoscFotor as wartoscFotor,
         (
           SELECT dtp.press_BMP
-          FROM DTP dtp
+          FROM {DTP_TABLE} dtp
           WHERE dtp.TS <= dt.TS
           ORDER BY dtp.TS DESC
           LIMIT 1
         ) as press_BMP,
         (
           SELECT dtp.refTEMP
-          FROM DTP dtp
+          FROM {DTP_TABLE} dtp
           WHERE dtp.TS <= dt.TS
           ORDER BY dtp.TS DESC
           LIMIT 1
         ) as refTEMP
-      FROM DT dt
+      FROM {DT_TABLE} dt
       ORDER BY dt.TS DESC
-      LIMIT ?
-      """,
-      (limit,),
-    ).fetchall()
+      LIMIT {limit}
+    """
+    cur.execute(sql_dt)
+    dt_rows = _rows_to_dicts(cur, cur.fetchall() or [])
 
-    gps_rows = conn.execute(
-      """
+    sql_gps = f"""
       SELECT
         gps.TS as ts,
         gps.millis as millis,
         gps.latitude as latitude,
         gps.longitude as longitude
-      FROM GPS gps
+      FROM {GPS_TABLE} gps
       ORDER BY gps.TS DESC
-      LIMIT ?
-      """,
-      (limit,),
-    ).fetchall()
+      LIMIT {limit}
+    """
+    cur.execute(sql_gps)
+    gps_rows = _rows_to_dicts(cur, cur.fetchall() or [])
 
     rows: list[dict] = []
     for dt in dt_rows:
-      ref_tmp = dt["refTEMP"]
+      ref_tmp = dt.get("refTEMP")
       ref_msg = "" if ref_tmp is None else f"refTEMP={ref_tmp}"
       rows.append(
         {
           "type": "DT",
-          "ts": dt["ts"],
-          "millis": dt["millis"],
-          "temp_BMP": dt["temp_BMP"],
-          "press_BMP": dt["press_BMP"],
-          "temp_SHT": dt["temp_SHT"],
-          "hum_SHT": dt["hum_SHT"],
-          "co2_SCD": dt["cot_SCD"],
-          "air_SPG": dt["air_SPG"],
-          "foto": dt["wartoscFotor"],
+          "ts": _format_ts(dt.get("ts")),
+          "millis": dt.get("millis"),
+          "temp_BMP": dt.get("temp_BMP"),
+          "press_BMP": dt.get("press_BMP"),
+          "temp_SHT": dt.get("temp_SHT"),
+          "hum_SHT": dt.get("hum_SHT"),
+          "co2_SCD": dt.get("cot_SCD"),
+          "air_SPG": dt.get("air_SPG"),
+          "foto": dt.get("wartoscFotor"),
           "message": ref_msg,
           "raw": "",
           "lat": None,
@@ -329,10 +384,10 @@ def fetch_recent(limit: int = 250) -> list[dict]:
       rows.append(
         {
           "type": "GPS",
-          "ts": gps["ts"],
-          "millis": gps["millis"],
-          "lat": gps["latitude"],
-          "lon": gps["longitude"],
+          "ts": _format_ts(gps.get("ts")),
+          "millis": gps.get("millis"),
+          "lat": gps.get("latitude"),
+          "lon": gps.get("longitude"),
           "message": "",
           "raw": "",
           "temp_BMP": None,
@@ -345,8 +400,14 @@ def fetch_recent(limit: int = 250) -> list[dict]:
         }
       )
 
+    # Sortujemy po timestamp (string w formacie YYYY-MM-DD HH:MM:SS).
     rows.sort(key=lambda r: r.get("ts") or "", reverse=True)
     return rows[:limit]
+  finally:
+    try:
+      conn.close()
+    except Exception:
+      pass
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -381,7 +442,9 @@ class Handler(SimpleHTTPRequestHandler):
   def do_GET(self):
     u = urlparse(self.path)
     if u.path == "/api/health":
-      self._send_json({"ok": True, "ts": now_ts(), "db": DB_PATH})
+      self._send_json(
+        {"ok": True, "ts": now_ts(), "db": f"{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}", "tables": {"DT": DT_TABLE, "GPS": GPS_TABLE, "DTP": DTP_TABLE}}
+      )
       return
     if u.path == "/api/latest":
       self._send_json(fetch_latest())
@@ -407,7 +470,7 @@ def main() -> None:
   host = os.environ.get("HOST", "0.0.0.0")
   port = int(os.environ.get("PORT", "8081"))
   httpd = ThreadingHTTPServer((host, port), Handler)
-  print(f"Serving {ROOT_DIR} on http://{host}:{port}  (DB: {DB_PATH})")
+  print(f"Serving {ROOT_DIR} on http://{host}:{port}  (MariaDB: {DB_HOST}:{DB_PORT}/{DB_NAME})")
   httpd.serve_forever()
 
 

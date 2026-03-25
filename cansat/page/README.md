@@ -15,7 +15,7 @@ Potem wejdź w przeglądarce na `http://localhost:8000`.
 ## Uruchomienie na RPi / stacji (API + baza)
 
 W katalogu projektu uruchom backend, który:
-- trzyma dane w SQLite (`telemetry.db`)
+- łączy się z bazą MariaDB/MySQL (odczyt tylko; nie tworzy tabel)
 - udostępnia API: `GET /api/latest`, `GET /api/recent` (tryb odczytu z bazy; `POST /api/ingest` wyłączone)
 - serwuje też pliki strony (`index.html`, itd.)
 
@@ -47,6 +47,25 @@ Strona obsługuje:
 
 Jeśli masz program, który odbiera telemetrię (np. przez UART/radio) i wystawia WebSocket, wystarczy wysyłać **tekstowe linie** dokładnie takie jak w logu – po jednej na wiersz.
 
-### Wrzucanie danych do bazy
+### Konfiguracja MariaDB
 
-Backend jest do odczytu: dane muszą być już zapisane w SQLite jako tabele `DT`, `GPS` i `DTP` (np. przez osobny skrypt/proces, który odbiera telemetrię).
+Ustaw zmienne środowiskowe przed uruchomieniem backendu:
+
+```bash
+DB_HOST="IP/host"
+DB_PORT="3306"
+DB_USER="uzytkownik"
+DB_PASSWORD="haslo"
+DB_NAME="nazwa_bazy"
+
+# opcjonalnie jeśli Twoje tabele mają inne nazwy:
+DT_TABLE="DT"
+GPS_TABLE="GPS"
+DTP_TABLE="DTP"
+```
+
+Backend potrzebuje sterownika Pythona do MySQL/MariaDB (np. `pymysql` albo `mariadb` albo `mysql-connector-python`).
+
+### Dane w bazie
+
+Backend zakłada, że w bazie istnieją tabele `DT`, `GPS` i `DTP` i tylko je czyta.
