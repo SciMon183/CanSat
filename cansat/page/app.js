@@ -82,51 +82,78 @@ function parseGpsLine(line) {
   // Supported:
   // GPS | lat=50.1234 | lon=19.9876
   // GPS | 50.1234 | 19.9876
+  // GPS | ts=2026-03-25 12:34:56 | lat=50.1234 | lon=19.9876
+  // GPS | ts=2026-03-25 12:34:56 | 50.1234 | 19.9876
   const parts = splitPipes(line);
   if (parts[0] !== "GPS") return null;
+
+  let ts = null;
+  let start = 1;
+  const tsToken = parts[1] ? String(parts[1]) : "";
+  const tsMatch = tsToken.match(/^ts\s*=\s*(.+)$/i);
+  if (tsMatch) {
+    ts = tsMatch[1].trim();
+    start = 2;
+  }
 
   const tryKeyed = () => {
     let lat = null;
     let lon = null;
-    for (const p of parts.slice(1)) {
+    for (const p of parts.slice(start)) {
       const m = p.match(/^(lat|latitude)\s*=\s*(.+)$/i);
       if (m) lat = toNumberMaybe(m[2]);
       const m2 = p.match(/^(lon|lng|longitude)\s*=\s*(.+)$/i);
       if (m2) lon = toNumberMaybe(m2[2]);
     }
     if (lat == null || lon == null) return null;
-    return { lat, lon, raw: line };
+    return { ts, lat, lon, raw: line };
   };
 
   const keyed = tryKeyed();
   if (keyed) return keyed;
 
-  if (parts.length >= 3) {
-    const lat = toNumberMaybe(parts[1]);
-    const lon = toNumberMaybe(parts[2]);
+  if (parts.length >= start + 2) {
+    const lat = toNumberMaybe(parts[start]);
+    const lon = toNumberMaybe(parts[start + 1]);
     if (lat != null && lon != null) return { lat, lon, raw: line };
   }
 
-  return { lat: null, lon: null, raw: line };
+  return { ts, lat: null, lon: null, raw: line };
 }
 
 function parseDtLine(line) {
   const parts = splitPipes(line);
   if (parts[0] !== "DT") return null;
   // DT | millis() | temp_BMP | press_BMP | temp_SHT | hum_SHT | co2_SCD | air_SPG | foto
-  const millis = parts[1] ?? null;
-  const v = (i) => (parts.length > i ? parts[i] : null);
+  // DT | ts=2026-03-25 12:34:56 | millis() | temp_BMP | press_BMP | temp_SHT | hum_SHT | co2_SCD | air_SPG | foto
+  let ts = null;
+  let start = 1;
+  const tsToken = parts[1] ? String(parts[1]) : "";
+  const tsMatch = tsToken.match(/^ts\s*=\s*(.+)$/i);
+  if (tsMatch) {
+    ts = tsMatch[1].trim();
+    start = 2;
+  }
+
+  const v = (i) => {
+    if (parts.length <= i) return null;
+    const raw = parts[i];
+    return isNA(raw) ? null : raw;
+  };
+
+  const millis = v(start);
 
   return {
     type: "DT",
+    ts,
     millis,
-    temp_BMP: v(2),
-    press_BMP: v(3),
-    temp_SHT: v(4),
-    hum_SHT: v(5),
-    co2_SCD: v(6),
-    air_SPG: v(7),
-    foto: v(8),
+    temp_BMP: v(start + 1),
+    press_BMP: v(start + 2),
+    temp_SHT: v(start + 3),
+    hum_SHT: v(start + 4),
+    co2_SCD: v(start + 5),
+    air_SPG: v(start + 6),
+    foto: v(start + 7),
     raw: line,
   };
 }
@@ -192,10 +219,8 @@ function renderLatest() {
   const dt = state.lastDt;
   if (!dt) {
     el.lastMillis.textContent = "—";
-    el.lastFrameTs.textContent = "—";
+    // Nie zmieniamy lastFrameTs, bo dla WS meta jest ustawiana w handleParsed().
   } else {
-    // Przy HTTP API `ts` pochodzi z bazy, więc nie doklejamy nowego czasu.
-    el.lastFrameTs.textContent = dt.ts ?? "—";
     el.lastMillis.textContent = fmtValue(dt.millis).text;
     setCardValue("temp_BMP", dt.temp_BMP, "°C");
     setCardValue("press_BMP", dt.press_BMP, "hPa");
@@ -301,13 +326,13 @@ function handleParsed(p) {
   if (!p) return;
   if (p.type === "IGNORED") return;
 
-  const ts = nowStamp();
-  el.lastFrameTs.textContent = ts;
+  const frameTs = p.ts ?? nowStamp();
+  el.lastFrameTs.textContent = frameTs;
 
   if (p.type === "DT") {
-    state.lastDt = p;
+    state.lastDt = { ...p, ts: frameTs };
     renderLatest();
-    addRow({ ...p, ts, message: "" });
+    addRow({ ...p, ts: frameTs, message: "" });
     return;
   }
 
@@ -315,19 +340,19 @@ function handleParsed(p) {
     state.lastGps = { lat: p.lat, lon: p.lon, raw: p.raw };
     renderLatest();
     updateMapFromGps(state.lastGps);
-    addRow({ type: "GPS", lat: p.lat, lon: p.lon, ts, raw: p.raw, message: "" });
+    addRow({ type: "GPS", lat: p.lat, lon: p.lon, ts: frameTs, raw: p.raw, message: "" });
     if (p.lat != null && p.lon != null) pushLog("GPS", `${p.lat.toFixed(6)}, ${p.lon.toFixed(6)}`);
     else pushLog("GPS", "Odebrano dane GPS, ale bez poprawnych współrzędnych");
     return;
   }
 
   if (p.type === "LOG") {
-    addRow({ type: "LOG", ts, message: p.message, raw: p.raw });
+    addRow({ type: "LOG", ts: frameTs, message: p.message, raw: p.raw });
     pushLog("LOG", p.message || p.raw);
     return;
   }
 
-  addRow({ type: p.type, ts, message: "", raw: p.raw });
+  addRow({ type: p.type, ts: frameTs, message: "", raw: p.raw });
   pushLog(p.type, p.raw);
 }
 
@@ -432,6 +457,7 @@ function ingestRecordFromApi(rec) {
       raw: rec.raw ?? "",
       message: rec.message ?? "",
     };
+    el.lastFrameTs.textContent = ts ?? "—";
     renderLatest();
     if (isSameFrame) return;
     state.lastDtTs = ts;
@@ -449,6 +475,7 @@ function ingestRecordFromApi(rec) {
       lon: Number.isFinite(lon) ? lon : null,
       raw: rec.raw ?? "",
     };
+    el.lastFrameTs.textContent = ts ?? "—";
     renderLatest();
     updateMapFromGps(state.lastGps);
     if (isSameFrame) return;
@@ -563,7 +590,8 @@ function clearAll() {
 
 function wireUi() {
   const savedMode = localStorage.getItem("telemetry.sourceMode");
-  el.sourceMode.value = savedMode || "ws";
+  // HTTP jest wyłączone (wszystko idzie przez WebSocket + `backend/ws.php`).
+  el.sourceMode.value = savedMode === "http" ? "ws" : savedMode || "ws";
 
   const savedWs = localStorage.getItem("telemetry.wsUrl");
   el.wsUrl.value = savedWs || "ws://localhost:8080";

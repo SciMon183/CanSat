@@ -7,40 +7,40 @@ Jasna, prosta strona do podglądu telemetrii: wartości czujników, tabela ramek
 Najprościej uruchomić mały serwer HTTP w katalogu projektu:
 
 ```bash
-python -m http.server 8000
+php -S localhost:8000
 ```
 
 Potem wejdź w przeglądarce na `http://localhost:8000`.
 
-## Uruchomienie na RPi / stacji (API + baza)
+## Uruchomienie na RPi / stacji (WebSocket + baza)
 
-W katalogu projektu uruchom backend, który:
+W katalogu projektu uruchom backend WebSocket, który:
 - łączy się z bazą MariaDB/MySQL (odczyt tylko; nie tworzy tabel)
-- udostępnia API: `GET /api/latest`, `GET /api/recent` (tryb odczytu z bazy; `POST /api/ingest` wyłączone)
-- serwuje też pliki strony (`index.html`, itd.)
+- wysyła dane z tabel `DT` i `GPS` do przeglądarki (tryb WebSocket)
 
 ```bash
-python3 backend/server.py
+php backend/ws.php
 ```
 
-Domyślnie startuje na `http://0.0.0.0:8081`.
+Domyślnie startuje na `ws://0.0.0.0:8080` (zmienisz przez `WS_PORT`).
 
-W UI wybierz źródło **HTTP API** i wpisz np. `http://raspberrypi.local:8081`.
+W UI wybierz źródło **WebSocket** i wpisz np. `ws://raspberrypi.local:8080`.
 
 ## Dane wejściowe
 
 Strona obsługuje:
 - **WebSocket**: wpisz adres (np. `ws://localhost:8080`) i kliknij „Połącz”.
 - **Plik**: wczytaj log przez przycisk lub przeciągnij i upuść plik na stronę.
-- **HTTP API (RPi / stacja)**: wybierz „HTTP API” i podaj adres backendu.
 
 ### Rozpoznawane linie
 
 - `DT | millis() | temp_BMP | press_BMP | temp_SHT | hum_SHT | co2_SCD | air_SPG | wart_fotorezystor`
+  - (lub z timestampem: `DT | ts=YYYY-MM-DD HH:MM:SS | millis() | ...`)
   - `NA` → traktowane jako brak danych i wyświetlane jako `—`
 - `LOG | <tekst>`
 - `GPS | lat=50.1234 | lon=19.9876`
   - albo `GPS | 50.1234 | 19.9876`
+  - (lub z timestampem: `GPS | ts=YYYY-MM-DD HH:MM:SS | lat=... | lon=...`)
 - `START` / `START | ...` → ignorowane
 
 ## Integracja z nadajnikiem/odbiornikiem
@@ -64,7 +64,7 @@ GPS_TABLE="GPS"
 DTP_TABLE="DTP"
 ```
 
-Backend potrzebuje sterownika Pythona do MySQL/MariaDB (np. `pymysql` albo `mariadb` albo `mysql-connector-python`).
+Backend potrzebuje PHP z rozszerzeniem `pdo_mysql` (PDO MySQL).
 
 ### Dane w bazie
 
