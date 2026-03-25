@@ -20,9 +20,9 @@ try {
 
   $DB_HOST = getenv('DB_HOST') ?: '127.0.0.1';
   $DB_PORT = (int)(getenv('DB_PORT') ?: '3306');
-  $DB_USER = getenv('DB_USER') ?: 'root';
-  $DB_PASSWORD = getenv('DB_PASSWORD') ?: '';
-  $DB_NAME = getenv('DB_NAME') ?: '';
+  $DB_USER = getenv('DB_USER') ?: 'cansat';
+  $DB_PASSWORD = getenv('DB_PASSWORD') ?: 'haslo';
+  $DB_NAME = getenv('DB_NAME') ?: 'cansat';
 
   $DT_TABLE = getenv('DT_TABLE') ?: 'DT';
   $GPS_TABLE = getenv('GPS_TABLE') ?: 'GPS';

@@ -547,7 +547,7 @@ function clearAll() {
 function wireUi() {
   const savedHttp = localStorage.getItem("telemetry.httpBaseUrl");
   el.sourceMode.value = "http";
-  el.httpBaseUrl.value = savedHttp || "http://raspberrypi.local:8080";
+  el.httpBaseUrl.value = savedHttp || "http://rpi-cansat.local/CanSat/cansat/page/backend/api.php";
 
   el.connect.addEventListener("click", () => {
     const base = el.httpBaseUrl.value.trim();
