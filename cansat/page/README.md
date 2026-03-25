@@ -16,7 +16,7 @@ Potem wejdź w przeglądarce na `http://localhost:8000`.
 
 W katalogu projektu uruchom backend, który:
 - trzyma dane w SQLite (`telemetry.db`)
-- udostępnia API: `GET /api/latest`, `GET /api/recent`, `POST /api/ingest`
+- udostępnia API: `GET /api/latest`, `GET /api/recent` (tryb odczytu z bazy; `POST /api/ingest` wyłączone)
 - serwuje też pliki strony (`index.html`, itd.)
 
 ```bash
@@ -47,12 +47,6 @@ Strona obsługuje:
 
 Jeśli masz program, który odbiera telemetrię (np. przez UART/radio) i wystawia WebSocket, wystarczy wysyłać **tekstowe linie** dokładnie takie jak w logu – po jednej na wiersz.
 
-### Wysyłanie danych do API (przykład)
+### Wrzucanie danych do bazy
 
-Wyślij tekst (wiele linii) na endpoint `POST /api/ingest`:
-
-```bash
-curl -X POST "http://raspberrypi.local:8081/api/ingest" \
-  -H "Content-Type: text/plain" \
-  --data-binary $'LOG | OtwarciePlikuNaKarcieSD\nDT | 24637 | NA | NA | NA | NA | 1103 | 0 | 0\nGPS | lat=52.237049 | lon=21.017532\nSTART'
-```
+Backend jest do odczytu: dane muszą być już zapisane w SQLite jako tabele `DT`, `GPS` i `DTP` (np. przez osobny skrypt/proces, który odbiera telemetrię).

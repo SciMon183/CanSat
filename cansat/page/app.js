@@ -17,7 +17,9 @@ const state = {
   ws: null,
   http: { baseUrl: null, timer: null, running: false, lastId: null },
   lastDt: null,
+  lastDtTs: null,
   lastGps: null,
+  lastGpsTs: null,
   rows: [],
   logLines: [],
 };
@@ -411,8 +413,11 @@ function ingestRecordFromApi(rec) {
   // API returns already-normalized records compatible with table fields.
   if (!rec || !rec.type) return;
   if (rec.type === "DT") {
+    const ts = rec.ts ?? null;
+    const isSameFrame = ts != null && state.lastDtTs === ts;
     state.lastDt = {
       type: "DT",
+      ts,
       millis: rec.millis ?? null,
       temp_BMP: rec.temp_BMP ?? null,
       press_BMP: rec.press_BMP ?? null,
@@ -422,18 +427,37 @@ function ingestRecordFromApi(rec) {
       air_SPG: rec.air_SPG ?? null,
       foto: rec.foto ?? null,
       raw: rec.raw ?? "",
+      message: rec.message ?? "",
     };
     renderLatest();
-    addRow({ ...state.lastDt, ts: rec.ts || nowStamp(), message: "" });
+    if (isSameFrame) return;
+    state.lastDtTs = ts;
+    addRow({ ...state.lastDt, ts: ts || nowStamp(), message: rec.message ?? "" });
     return;
   }
   if (rec.type === "GPS") {
+    const ts = rec.ts ?? null;
+    const isSameFrame = ts != null && state.lastGpsTs === ts;
     const lat = rec.lat == null ? null : Number(rec.lat);
     const lon = rec.lon == null ? null : Number(rec.lon);
-    state.lastGps = { lat: Number.isFinite(lat) ? lat : null, lon: Number.isFinite(lon) ? lon : null, raw: rec.raw ?? "" };
+    state.lastGps = {
+      ts,
+      lat: Number.isFinite(lat) ? lat : null,
+      lon: Number.isFinite(lon) ? lon : null,
+      raw: rec.raw ?? "",
+    };
     renderLatest();
     updateMapFromGps(state.lastGps);
-    addRow({ type: "GPS", lat: state.lastGps.lat, lon: state.lastGps.lon, ts: rec.ts || nowStamp(), raw: rec.raw ?? "", message: "" });
+    if (isSameFrame) return;
+    state.lastGpsTs = ts;
+    addRow({
+      type: "GPS",
+      lat: state.lastGps.lat,
+      lon: state.lastGps.lon,
+      ts: ts || nowStamp(),
+      raw: rec.raw ?? "",
+      message: "",
+    });
     return;
   }
   if (rec.type === "LOG") {
@@ -463,6 +487,8 @@ function connectHttp(baseUrl) {
     return;
   }
 
+  clearAll();
+
   setConn("warn", "Łączenie…");
   el.connect.disabled = true;
   el.disconnect.disabled = false;
@@ -480,8 +506,31 @@ function connectHttp(baseUrl) {
     }
   };
 
-  tick();
-  state.http.timer = setInterval(tick, 1000);
+  (async () => {
+    try {
+      const [latest, recent] = await Promise.all([httpFetchJson("/api/latest"), httpFetchJson(`/api/recent?limit=${MAX_ROWS}`)]);
+
+      if (latest?.dt) {
+        state.lastDtTs = latest.dt.ts ?? null;
+        ingestRecordFromApi({ ...latest.dt, type: "DT" });
+      }
+      if (latest?.gps) {
+        state.lastGpsTs = latest.gps.ts ?? null;
+        ingestRecordFromApi({ ...latest.gps, type: "GPS" });
+      }
+
+      if (Array.isArray(recent)) {
+        state.rows = recent;
+        renderRows();
+      }
+    } catch (e) {
+      setConn("bad", "Błąd ładowania historii (HTTP)");
+      pushLog("HTTP", `Błąd: ${String(e?.message || e)}`);
+    } finally {
+      tick();
+      state.http.timer = setInterval(tick, 1000);
+    }
+  })();
 }
 
 function disconnectHttp() {
@@ -493,7 +542,9 @@ function disconnectHttp() {
 
 function clearAll() {
   state.lastDt = null;
+  state.lastDtTs = null;
   state.lastGps = null;
+  state.lastGpsTs = null;
   state.rows = [];
   state.logLines = [];
   el.lastFrameTs.textContent = "—";

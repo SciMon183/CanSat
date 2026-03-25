@@ -24,29 +24,46 @@ def db_connect() -> sqlite3.Connection:
 
 
 def db_init() -> None:
+  # Read-only UI: zakładamy, że dane są już wrzucane do DB przez inny proces.
+  # Ten backend tworzy tylko tabele, jeśli ich jeszcze nie ma.
   with db_connect() as conn:
     conn.execute(
       """
-      CREATE TABLE IF NOT EXISTS telemetry (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ts TEXT NOT NULL,
-        type TEXT NOT NULL,
-        millis TEXT,
-        temp_BMP TEXT,
-        press_BMP TEXT,
-        temp_SHT TEXT,
-        hum_SHT TEXT,
-        co2_SCD TEXT,
-        air_SPG TEXT,
-        foto TEXT,
-        lat REAL,
-        lon REAL,
-        message TEXT,
-        raw TEXT
+      CREATE TABLE IF NOT EXISTS DT (
+        TS TIMESTAMP DEFAULT CURRENT_TIMESTAMP PRIMARY KEY,
+        millis BIGINT,
+        temp_BMP VARCHAR(16),
+        temp_SHT VARCHAR(16),
+        hum_SHT VARCHAR(16),
+        cot_SCD VARCHAR(16),
+        air_SPG VARCHAR(16),
+        metan INT,
+        wartoscFotor INT
       )
       """
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_type_id ON telemetry(type, id)")
+    conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS GPS (
+        TS TIMESTAMP DEFAULT CURRENT_TIMESTAMP PRIMARY KEY,
+        millis BIGINT,
+        latitude DOUBLE,
+        longitude DOUBLE,
+        distanceToHome BIGINT,
+        courseToHome DOUBLE,
+        satellites INT
+      )
+      """
+    )
+    conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS DTP (
+        TS TIMESTAMP DEFAULT CURRENT_TIMESTAMP PRIMARY KEY,
+        refTEMP DOUBLE,
+        press_BMP VARCHAR(16)
+      )
+      """
+    )
     conn.commit()
 
 
@@ -161,23 +178,175 @@ def insert_records(lines: list[str]) -> int:
 def fetch_latest() -> dict:
   out: dict = {"dt": None, "gps": None, "logs": []}
   with db_connect() as conn:
-    dt = conn.execute("SELECT * FROM telemetry WHERE type='DT' ORDER BY id DESC LIMIT 1").fetchone()
-    gps = conn.execute("SELECT * FROM telemetry WHERE type='GPS' ORDER BY id DESC LIMIT 1").fetchone()
-    logs = conn.execute("SELECT * FROM telemetry WHERE type='LOG' ORDER BY id DESC LIMIT 10").fetchall()
+    # DT + DTP (ciśnienie z DTP dopięte do najbliższego poprzedniego timestampu DT).
+    dt = conn.execute(
+      """
+      SELECT
+        dt.TS as ts,
+        dt.millis as millis,
+        dt.temp_BMP as temp_BMP,
+        dt.temp_SHT as temp_SHT,
+        dt.hum_SHT as hum_SHT,
+        dt.cot_SCD as cot_SCD,
+        dt.air_SPG as air_SPG,
+        dt.wartoscFotor as wartoscFotor,
+        (
+          SELECT dtp.press_BMP
+          FROM DTP dtp
+          WHERE dtp.TS <= dt.TS
+          ORDER BY dtp.TS DESC
+          LIMIT 1
+        ) as press_BMP,
+        (
+          SELECT dtp.refTEMP
+          FROM DTP dtp
+          WHERE dtp.TS <= dt.TS
+          ORDER BY dtp.TS DESC
+          LIMIT 1
+        ) as refTEMP
+      FROM DT dt
+      ORDER BY dt.TS DESC
+      LIMIT 1
+      """
+    ).fetchone()
 
     if dt:
-      out["dt"] = dict(dt)
+      ref_tmp = dt["refTEMP"]
+      ref_msg = "" if ref_tmp is None else f"refTEMP={ref_tmp}"
+      out["dt"] = {
+        "ts": dt["ts"],
+        "millis": dt["millis"],
+        "temp_BMP": dt["temp_BMP"],
+        "press_BMP": dt["press_BMP"],
+        "temp_SHT": dt["temp_SHT"],
+        "hum_SHT": dt["hum_SHT"],
+        # UI oczekuje `co2_SCD`, a w Twojej bazie jest `cot_SCD`.
+        "co2_SCD": dt["cot_SCD"],
+        "air_SPG": dt["air_SPG"],
+        "foto": dt["wartoscFotor"],
+        "message": ref_msg,
+        "raw": "",
+      }
+
+    gps = conn.execute(
+      """
+      SELECT
+        gps.TS as ts,
+        gps.millis as millis,
+        gps.latitude as latitude,
+        gps.longitude as longitude
+      FROM GPS gps
+      ORDER BY gps.TS DESC
+      LIMIT 1
+      """
+    ).fetchone()
     if gps:
-      out["gps"] = dict(gps)
-    out["logs"] = [dict(r) for r in logs]
+      out["gps"] = {
+        "ts": gps["ts"],
+        "millis": gps["millis"],
+        "lat": gps["latitude"],
+        "lon": gps["longitude"],
+        "raw": "",
+      }
+
   return out
 
 
 def fetch_recent(limit: int = 250) -> list[dict]:
   limit = max(1, min(2000, int(limit)))
   with db_connect() as conn:
-    rows = conn.execute("SELECT * FROM telemetry ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-    return [dict(r) for r in rows]
+    # Historia: DT + GPS (ciśnienie dopięte z DTP do każdego wiersza DT).
+    dt_rows = conn.execute(
+      """
+      SELECT
+        dt.TS as ts,
+        dt.millis as millis,
+        dt.temp_BMP as temp_BMP,
+        dt.temp_SHT as temp_SHT,
+        dt.hum_SHT as hum_SHT,
+        dt.cot_SCD as cot_SCD,
+        dt.air_SPG as air_SPG,
+        dt.wartoscFotor as wartoscFotor,
+        (
+          SELECT dtp.press_BMP
+          FROM DTP dtp
+          WHERE dtp.TS <= dt.TS
+          ORDER BY dtp.TS DESC
+          LIMIT 1
+        ) as press_BMP,
+        (
+          SELECT dtp.refTEMP
+          FROM DTP dtp
+          WHERE dtp.TS <= dt.TS
+          ORDER BY dtp.TS DESC
+          LIMIT 1
+        ) as refTEMP
+      FROM DT dt
+      ORDER BY dt.TS DESC
+      LIMIT ?
+      """,
+      (limit,),
+    ).fetchall()
+
+    gps_rows = conn.execute(
+      """
+      SELECT
+        gps.TS as ts,
+        gps.millis as millis,
+        gps.latitude as latitude,
+        gps.longitude as longitude
+      FROM GPS gps
+      ORDER BY gps.TS DESC
+      LIMIT ?
+      """,
+      (limit,),
+    ).fetchall()
+
+    rows: list[dict] = []
+    for dt in dt_rows:
+      ref_tmp = dt["refTEMP"]
+      ref_msg = "" if ref_tmp is None else f"refTEMP={ref_tmp}"
+      rows.append(
+        {
+          "type": "DT",
+          "ts": dt["ts"],
+          "millis": dt["millis"],
+          "temp_BMP": dt["temp_BMP"],
+          "press_BMP": dt["press_BMP"],
+          "temp_SHT": dt["temp_SHT"],
+          "hum_SHT": dt["hum_SHT"],
+          "co2_SCD": dt["cot_SCD"],
+          "air_SPG": dt["air_SPG"],
+          "foto": dt["wartoscFotor"],
+          "message": ref_msg,
+          "raw": "",
+          "lat": None,
+          "lon": None,
+        }
+      )
+
+    for gps in gps_rows:
+      rows.append(
+        {
+          "type": "GPS",
+          "ts": gps["ts"],
+          "millis": gps["millis"],
+          "lat": gps["latitude"],
+          "lon": gps["longitude"],
+          "message": "",
+          "raw": "",
+          "temp_BMP": None,
+          "press_BMP": None,
+          "temp_SHT": None,
+          "hum_SHT": None,
+          "co2_SCD": None,
+          "air_SPG": None,
+          "foto": None,
+        }
+      )
+
+    rows.sort(key=lambda r: r.get("ts") or "", reverse=True)
+    return rows[:limit]
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -227,11 +396,8 @@ class Handler(SimpleHTTPRequestHandler):
   def do_POST(self):
     u = urlparse(self.path)
     if u.path == "/api/ingest":
-      length = int(self.headers.get("Content-Length") or "0")
-      raw = self.rfile.read(length).decode("utf-8", errors="replace")
-      lines = raw.splitlines()
-      n = insert_records(lines)
-      self._send_json({"ok": True, "inserted": n})
+      # UI ma wyłącznie czytać dane z bazy i je pokazywać.
+      self._send_text("POST /api/ingest disabled (read-only UI)", code=405)
       return
     self._send_text("Not found", code=404)
 
