@@ -12,24 +12,23 @@ php -S localhost:8000
 
 Potem wejdź w przeglądarce na `http://localhost:8000`.
 
-## Uruchomienie na RPi / stacji (WebSocket + baza)
+## Uruchomienie na RPi / stacji (HTTP polling + baza)
 
-W katalogu projektu uruchom backend WebSocket, który:
+W katalogu projektu uruchom serwer PHP (API działa jako zwykły endpoint HTTP):
 - łączy się z bazą MariaDB/MySQL (odczyt tylko; nie tworzy tabel)
-- wysyła dane z tabel `DT` i `GPS` do przeglądarki (tryb WebSocket)
 
 ```bash
-php backend/ws.php
+php -S 0.0.0.0:8080
 ```
 
-Domyślnie startuje na `ws://0.0.0.0:8080` (zmienisz przez `WS_PORT`).
+Domyślnie startuje na `http://0.0.0.0:8080`.
 
-W UI wybierz źródło **WebSocket** i wpisz np. `ws://raspberrypi.local:8080`.
+W UI wybierz źródło **HTTP polling (PHP)** i wpisz np. `http://raspberrypi.local:8080`.
 
 ## Dane wejściowe
 
 Strona obsługuje:
-- **WebSocket**: wpisz adres (np. `ws://localhost:8080`) i kliknij „Połącz”.
+- **HTTP polling (PHP)**: wpisz adres (np. `http://localhost:8080`) i kliknij „Połącz”.
 - **Plik**: wczytaj log przez przycisk lub przeciągnij i upuść plik na stronę.
 
 ### Rozpoznawane linie
@@ -45,7 +44,7 @@ Strona obsługuje:
 
 ## Integracja z nadajnikiem/odbiornikiem
 
-Jeśli masz program, który odbiera telemetrię (np. przez UART/radio) i wystawia WebSocket, wystarczy wysyłać **tekstowe linie** dokładnie takie jak w logu – po jednej na wiersz.
+Jeśli masz program, który odbiera telemetrię (np. przez UART/radio), to backend odczytuje gotowe rekordy z tabel `DT`, `GPS` i `DTP` w MariaDB.
 
 ### Konfiguracja MariaDB
 

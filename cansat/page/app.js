@@ -14,12 +14,9 @@ const SENSOR_SCHEMA = [
 ];
 
 const state = {
-  ws: null,
-  http: { baseUrl: null, timer: null, running: false, lastId: null },
+  http: { baseUrl: null, timer: null, running: false, lastTimestamp: null },
   lastDt: null,
-  lastDtTs: null,
   lastGps: null,
-  lastGpsTs: null,
   rows: [],
   logLines: [],
 };
@@ -27,7 +24,6 @@ const state = {
 const el = {
   connStatus: document.getElementById("connStatus"),
   sourceMode: document.getElementById("sourceMode"),
-  wsUrl: document.getElementById("wsUrl"),
   httpBaseUrl: document.getElementById("httpBaseUrl"),
   connect: document.getElementById("connect"),
   disconnect: document.getElementById("disconnect"),
@@ -219,8 +215,9 @@ function renderLatest() {
   const dt = state.lastDt;
   if (!dt) {
     el.lastMillis.textContent = "—";
-    // Nie zmieniamy lastFrameTs, bo dla WS meta jest ustawiana w handleParsed().
+    el.lastFrameTs.textContent = "—";
   } else {
+    el.lastFrameTs.textContent = dt.ts ?? "—";
     el.lastMillis.textContent = fmtValue(dt.millis).text;
     setCardValue("temp_BMP", dt.temp_BMP, "°C");
     setCardValue("press_BMP", dt.press_BMP, "hPa");
@@ -361,62 +358,6 @@ function handleTextChunk(text) {
   for (const line of lines) handleParsed(parseLine(line));
 }
 
-function connectWs(url) {
-  try {
-    disconnectHttp();
-    const ws = new WebSocket(url);
-    state.ws = ws;
-
-    setConn("warn", "Łączenie…");
-    el.connect.disabled = true;
-    el.disconnect.disabled = false;
-
-    ws.addEventListener("open", () => {
-      setConn("ok", "Połączono");
-      pushLog("WS", `Połączono: ${url}`);
-    });
-
-    ws.addEventListener("message", (ev) => {
-      const data = ev.data;
-      if (typeof data === "string") handleTextChunk(data);
-      else if (data instanceof Blob) data.text().then(handleTextChunk).catch(() => {});
-      else pushLog("WS", "Odebrano nieobsługiwany typ wiadomości");
-    });
-
-    ws.addEventListener("close", () => {
-      if (state.ws === ws) state.ws = null;
-      setConn("idle", "Brak połączenia");
-      el.connect.disabled = false;
-      el.disconnect.disabled = true;
-      pushLog("WS", "Rozłączono");
-    });
-
-    ws.addEventListener("error", () => {
-      setConn("bad", "Błąd połączenia");
-      pushLog("WS", "Błąd WebSocket");
-    });
-  } catch (e) {
-    setConn("bad", "Nieprawidłowy adres");
-    pushLog("WS", `Nie udało się połączyć: ${String(e?.message || e)}`);
-    el.connect.disabled = false;
-    el.disconnect.disabled = true;
-  }
-}
-
-function disconnectWs() {
-  if (!state.ws) return;
-  try {
-    state.ws.close();
-  } catch {
-    // ignore
-  } finally {
-    state.ws = null;
-    setConn("idle", "Brak połączenia");
-    el.connect.disabled = false;
-    el.disconnect.disabled = true;
-  }
-}
-
 function normalizeBaseUrl(u) {
   const s = String(u || "").trim();
   if (!s) return null;
@@ -437,79 +378,114 @@ async function httpFetchJson(path, { timeoutMs = 4000 } = {}) {
   }
 }
 
-function ingestRecordFromApi(rec) {
-  // API returns already-normalized records compatible with table fields.
-  if (!rec || !rec.type) return;
-  if (rec.type === "DT") {
-    const ts = rec.ts ?? null;
-    const isSameFrame = ts != null && state.lastDtTs === ts;
+function ingestPollData(data) {
+  const dtArr = Array.isArray(data?.dt) ? data.dt : [];
+  const gpsArr = Array.isArray(data?.gps) ? data.gps : [];
+
+  const cmpTs = (a, b) => String(a ?? "").localeCompare(String(b ?? ""));
+  const toFiniteNum = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  dtArr.sort((x, y) => cmpTs(x.ts, y.ts));
+  gpsArr.sort((x, y) => cmpTs(x.ts, y.ts));
+
+  const newestDt = dtArr.length ? dtArr[dtArr.length - 1] : null;
+  const newestGps = gpsArr.length ? gpsArr[gpsArr.length - 1] : null;
+
+  // Uaktualnij lastTimestamp jako max(ts) z DT i GPS.
+  let maxTs = state.http.lastTimestamp;
+  for (const r of dtArr) if (r?.ts && (!maxTs || cmpTs(maxTs, r.ts) < 0)) maxTs = r.ts;
+  for (const r of gpsArr) if (r?.ts && (!maxTs || cmpTs(maxTs, r.ts) < 0)) maxTs = r.ts;
+  if (maxTs) state.http.lastTimestamp = maxTs;
+
+  const events = [];
+  for (const dt of dtArr) {
+    events.push({
+      type: "DT",
+      ts: dt.ts,
+      millis: dt.millis ?? null,
+      temp_BMP: dt.temp_BMP ?? null,
+      press_BMP: dt.press_BMP ?? null,
+      temp_SHT: dt.temp_SHT ?? null,
+      hum_SHT: dt.hum_SHT ?? null,
+      co2_SCD: dt.co2_SCD ?? null,
+      air_SPG: dt.air_SPG ?? null,
+      foto: dt.foto ?? null,
+      lat: null,
+      lon: null,
+      message: "",
+      raw: "",
+    });
+  }
+  for (const gps of gpsArr) {
+    const lat = toFiniteNum(gps.latitude);
+    const lon = toFiniteNum(gps.longitude);
+    events.push({
+      type: "GPS",
+      ts: gps.ts,
+      millis: gps.millis ?? null,
+      temp_BMP: null,
+      press_BMP: null,
+      temp_SHT: null,
+      hum_SHT: null,
+      co2_SCD: null,
+      air_SPG: null,
+      foto: null,
+      lat,
+      lon,
+      message: "",
+      raw: "",
+    });
+  }
+
+  events.sort((a, b) => cmpTs(a.ts, b.ts));
+  // Batch rows to avoid re-rendering the whole table N times.
+  for (const ev of events) {
+    state.rows.unshift(ev);
+    if (state.rows.length > MAX_ROWS) state.rows.pop();
+  }
+  renderRows();
+
+  if (newestDt) {
     state.lastDt = {
       type: "DT",
-      ts,
-      millis: rec.millis ?? null,
-      temp_BMP: rec.temp_BMP ?? null,
-      press_BMP: rec.press_BMP ?? null,
-      temp_SHT: rec.temp_SHT ?? null,
-      hum_SHT: rec.hum_SHT ?? null,
-      co2_SCD: rec.co2_SCD ?? null,
-      air_SPG: rec.air_SPG ?? null,
-      foto: rec.foto ?? null,
-      raw: rec.raw ?? "",
-      message: rec.message ?? "",
-    };
-    el.lastFrameTs.textContent = ts ?? "—";
-    renderLatest();
-    if (isSameFrame) return;
-    state.lastDtTs = ts;
-    addRow({ ...state.lastDt, ts, message: rec.message ?? "" });
-    return;
-  }
-  if (rec.type === "GPS") {
-    const ts = rec.ts ?? null;
-    const isSameFrame = ts != null && state.lastGpsTs === ts;
-    const lat = rec.lat == null ? null : Number(rec.lat);
-    const lon = rec.lon == null ? null : Number(rec.lon);
-    state.lastGps = {
-      ts,
-      lat: Number.isFinite(lat) ? lat : null,
-      lon: Number.isFinite(lon) ? lon : null,
-      raw: rec.raw ?? "",
-    };
-    el.lastFrameTs.textContent = ts ?? "—";
-    renderLatest();
-    updateMapFromGps(state.lastGps);
-    if (isSameFrame) return;
-    state.lastGpsTs = ts;
-    addRow({
-      type: "GPS",
-      lat: state.lastGps.lat,
-      lon: state.lastGps.lon,
-      ts,
-      raw: rec.raw ?? "",
+      ts: newestDt.ts,
+      millis: newestDt.millis ?? null,
+      temp_BMP: newestDt.temp_BMP ?? null,
+      press_BMP: newestDt.press_BMP ?? null,
+      temp_SHT: newestDt.temp_SHT ?? null,
+      hum_SHT: newestDt.hum_SHT ?? null,
+      co2_SCD: newestDt.co2_SCD ?? null,
+      air_SPG: newestDt.air_SPG ?? null,
+      foto: newestDt.foto ?? null,
+      raw: "",
       message: "",
-    });
-    return;
+    };
   }
-  if (rec.type === "LOG") {
-    addRow({ type: "LOG", ts: rec.ts || nowStamp(), message: rec.message ?? "", raw: rec.raw ?? "" });
-    pushLog("LOG", rec.message ?? rec.raw ?? "");
-    return;
+
+  if (newestGps) {
+    state.lastGps = {
+      ts: newestGps.ts,
+      lat: toFiniteNum(newestGps.latitude),
+      lon: toFiniteNum(newestGps.longitude),
+      raw: "",
+    };
+    updateMapFromGps(state.lastGps);
   }
-  addRow({ type: rec.type, ts: rec.ts || nowStamp(), message: rec.message ?? "", raw: rec.raw ?? "" });
+
+  renderLatest();
 }
 
-async function httpPollOnce() {
-  const latest = await httpFetchJson("/api/latest");
-  if (latest?.dt) ingestRecordFromApi({ ...latest.dt, type: "DT" });
-  if (latest?.gps) ingestRecordFromApi({ ...latest.gps, type: "GPS" });
-
-  if (Array.isArray(latest?.logs)) {
-    for (const l of latest.logs) ingestRecordFromApi({ ...l, type: "LOG" });
-  }
+async function fetchData() {
+  const since = state.http.lastTimestamp;
+  const sinceParam = since ? `?since_ts=${encodeURIComponent(since)}` : "";
+  const data = await httpFetchJson(`/backend/api.php${sinceParam}`);
+  ingestPollData(data || {});
 }
 
 function connectHttp(baseUrl) {
-  disconnectWs();
   disconnectHttp();
   state.http.baseUrl = normalizeBaseUrl(baseUrl);
   if (!state.http.baseUrl) {
@@ -523,12 +499,13 @@ function connectHttp(baseUrl) {
   el.connect.disabled = true;
   el.disconnect.disabled = false;
   state.http.running = true;
+  state.http.lastTimestamp = null;
   pushLog("HTTP", `Ustawiono API: ${state.http.baseUrl}`);
 
   const tick = async () => {
     if (!state.http.running) return;
     try {
-      await httpPollOnce();
+      await fetchData();
       setConn("ok", "Połączono (HTTP)");
     } catch (e) {
       setConn("bad", "Błąd HTTP");
@@ -536,31 +513,8 @@ function connectHttp(baseUrl) {
     }
   };
 
-  (async () => {
-    try {
-      const [latest, recent] = await Promise.all([httpFetchJson("/api/latest"), httpFetchJson(`/api/recent?limit=${MAX_ROWS}`)]);
-
-      if (latest?.dt) {
-        state.lastDtTs = latest.dt.ts ?? null;
-        ingestRecordFromApi({ ...latest.dt, type: "DT" });
-      }
-      if (latest?.gps) {
-        state.lastGpsTs = latest.gps.ts ?? null;
-        ingestRecordFromApi({ ...latest.gps, type: "GPS" });
-      }
-
-      if (Array.isArray(recent)) {
-        state.rows = recent;
-        renderRows();
-      }
-    } catch (e) {
-      setConn("bad", "Błąd ładowania historii (HTTP)");
-      pushLog("HTTP", `Błąd: ${String(e?.message || e)}`);
-    } finally {
-      tick();
-      state.http.timer = setInterval(tick, 1000);
-    }
-  })();
+  tick();
+  state.http.timer = setInterval(tick, 1000);
 }
 
 function disconnectHttp() {
@@ -568,13 +522,15 @@ function disconnectHttp() {
   if (state.http.timer) clearInterval(state.http.timer);
   state.http.timer = null;
   state.http.baseUrl = null;
+  state.http.lastTimestamp = null;
+  el.connect.disabled = false;
+  el.disconnect.disabled = true;
 }
 
 function clearAll() {
   state.lastDt = null;
-  state.lastDtTs = null;
   state.lastGps = null;
-  state.lastGpsTs = null;
+  state.http.lastTimestamp = null;
   state.rows = [];
   state.logLines = [];
   el.lastFrameTs.textContent = "—";
@@ -589,41 +545,21 @@ function clearAll() {
 }
 
 function wireUi() {
-  const savedMode = localStorage.getItem("telemetry.sourceMode");
-  // HTTP jest wyłączone (wszystko idzie przez WebSocket + `backend/ws.php`).
-  el.sourceMode.value = savedMode === "http" ? "ws" : savedMode || "ws";
-
-  const savedWs = localStorage.getItem("telemetry.wsUrl");
-  el.wsUrl.value = savedWs || "ws://localhost:8080";
-
   const savedHttp = localStorage.getItem("telemetry.httpBaseUrl");
-  el.httpBaseUrl.value = savedHttp || "http://raspberrypi.local:8081";
-
-  el.sourceMode.addEventListener("change", () => {
-    localStorage.setItem("telemetry.sourceMode", el.sourceMode.value);
-  });
+  el.sourceMode.value = "http";
+  el.httpBaseUrl.value = savedHttp || "http://raspberrypi.local:8080";
 
   el.connect.addEventListener("click", () => {
-    const mode = el.sourceMode.value;
-    if (mode === "ws") {
-      const url = el.wsUrl.value.trim();
-      if (!url) return;
-      localStorage.setItem("telemetry.wsUrl", url);
-      connectWs(url);
-      return;
-    }
-    if (mode === "http") {
-      const base = el.httpBaseUrl.value.trim();
-      if (!base) return;
-      localStorage.setItem("telemetry.httpBaseUrl", base);
-      connectHttp(base);
-    }
+    const base = el.httpBaseUrl.value.trim();
+    if (!base) return;
+    localStorage.setItem("telemetry.httpBaseUrl", base);
+    connectHttp(base);
   });
 
   el.disconnect.addEventListener("click", () => {
-    disconnectWs();
     disconnectHttp();
     setConn("idle", "Brak połączenia");
+    pushLog("HTTP", "Rozłączono");
   });
 
   el.fileInput.addEventListener("change", async (ev) => {
@@ -651,13 +587,7 @@ function wireUi() {
   });
 }
 
-function seedExample() {
-  // Minimalny przykład na start (żeby UI nie było puste)
-  handleTextChunk("LOG | OtwarciePlikuNaKarcieSD\nDT | 24637 | NA | NA | NA | NA | 1103 | 0 | 0\nGPS | lat=52.237049 | lon=21.017532\nSTART");
-}
-
 createCards();
 initMap();
 wireUi();
-// Nie wstawiamy przykładowych rekordów (timestamp ma pochodzić z bazy).
 setConn("idle", "Brak połączenia");
