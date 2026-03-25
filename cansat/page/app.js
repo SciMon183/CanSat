@@ -192,7 +192,10 @@ function renderLatest() {
   const dt = state.lastDt;
   if (!dt) {
     el.lastMillis.textContent = "—";
+    el.lastFrameTs.textContent = "—";
   } else {
+    // Przy HTTP API `ts` pochodzi z bazy, więc nie doklejamy nowego czasu.
+    el.lastFrameTs.textContent = dt.ts ?? "—";
     el.lastMillis.textContent = fmtValue(dt.millis).text;
     setCardValue("temp_BMP", dt.temp_BMP, "°C");
     setCardValue("press_BMP", dt.press_BMP, "hPa");
@@ -432,7 +435,7 @@ function ingestRecordFromApi(rec) {
     renderLatest();
     if (isSameFrame) return;
     state.lastDtTs = ts;
-    addRow({ ...state.lastDt, ts: ts || nowStamp(), message: rec.message ?? "" });
+    addRow({ ...state.lastDt, ts, message: rec.message ?? "" });
     return;
   }
   if (rec.type === "GPS") {
@@ -454,7 +457,7 @@ function ingestRecordFromApi(rec) {
       type: "GPS",
       lat: state.lastGps.lat,
       lon: state.lastGps.lon,
-      ts: ts || nowStamp(),
+      ts,
       raw: rec.raw ?? "",
       message: "",
     });
@@ -628,5 +631,5 @@ function seedExample() {
 createCards();
 initMap();
 wireUi();
-seedExample();
+// Nie wstawiamy przykładowych rekordów (timestamp ma pochodzić z bazy).
 setConn("idle", "Brak połączenia");

@@ -180,7 +180,6 @@ def insert_records(lines: list[str]) -> int:
     rec = parse_line(ln)
     if not rec or rec.get("type") == "IGNORED":
       continue
-    rec["ts"] = now_ts()
     records.append(rec)
 
   if not records:
