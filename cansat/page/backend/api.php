@@ -66,9 +66,12 @@ try {
   $sqlGPSSelect = "
     SELECT
       gps.TS as ts,
-      gps.millis as millis,
       gps.latitude as latitude,
-      gps.longitude as longitude
+      gps.longitude as longitude,
+      gps.distanceToHome as distanceToHome,
+      gps.courseToHome as courseToHome,
+      gps.AGL as AGL,
+      gps.satellites as satellites
     FROM {$GPS_TABLE} gps
   ";
 
