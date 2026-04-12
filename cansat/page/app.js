@@ -17,6 +17,8 @@ const state = {
   http: { baseUrl: null, timer: null, running: false, lastTimestamp: null },
   lastDt: null,
   lastGps: null,
+  homeGps: null,
+  status: 0,
   rows: [],
   logLines: [],
 };
@@ -33,6 +35,8 @@ const el = {
   rows: document.getElementById("rows"),
   log: document.getElementById("log"),
   gpsText: document.getElementById("gpsText"),
+  distanceText: document.getElementById("distanceText"),
+  statusText: document.getElementById("statusText"),
   fileInput: document.getElementById("fileInput"),
   clear: document.getElementById("clear"),
 };
@@ -72,6 +76,17 @@ function splitPipes(line) {
     .split("|")
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
+}
+
+function haversineDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Earth radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
 function parseGpsLine(line) {
@@ -160,12 +175,20 @@ function parseLogLine(line) {
   return { type: "LOG", message: parts.slice(1).join(" | ") || "", raw: line };
 }
 
+function parseStatusLine(line) {
+  const parts = splitPipes(line);
+  if (parts[0] !== "STATUS") return null;
+  const value = toNumberMaybe(parts[1]);
+  return { type: "STATUS", value, raw: line };
+}
+
 function parseLine(line) {
   const trimmed = String(line ?? "").trim();
   if (!trimmed) return null;
   if (trimmed === "START" || trimmed.startsWith("START |")) return { type: "IGNORED", raw: trimmed };
   if (trimmed.startsWith("DT")) return parseDtLine(trimmed);
   if (trimmed.startsWith("GPS")) return { type: "GPS", ...parseGpsLine(trimmed) };
+  if (trimmed.startsWith("STATUS")) return parseStatusLine(trimmed);
   if (trimmed.startsWith("LOG")) return parseLogLine(trimmed);
   return { type: "UNKNOWN", raw: trimmed };
 }
@@ -231,11 +254,21 @@ function renderLatest() {
   const gps = state.lastGps;
   if (!gps) {
     el.gpsText.textContent = "—";
+    el.distanceText.textContent = "—";
   } else if (gps.lat != null && gps.lon != null) {
     el.gpsText.textContent = `${gps.lat.toFixed(6)}, ${gps.lon.toFixed(6)}`;
+    if (state.homeGps) {
+      const dist = haversineDistance(state.homeGps.lat, state.homeGps.lon, gps.lat, gps.lon);
+      el.distanceText.textContent = `${dist.toFixed(2)} km`;
+    } else {
+      el.distanceText.textContent = "Brak pozycji domu";
+    }
   } else {
     el.gpsText.textContent = "Brak poprawnych współrzędnych";
+    el.distanceText.textContent = "—";
   }
+
+  el.statusText.textContent = state.status;
 }
 
 function addRow(row) {
@@ -296,7 +329,7 @@ const pathLatLngs = [];
 
 function initMap() {
   map = L.map("map", { zoomControl: true }).setView([52.237049, 21.017532], 6); // PL default
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  L.tileLayer("http://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   }).addTo(map);
@@ -335,6 +368,10 @@ function handleParsed(p) {
 
   if (p.type === "GPS") {
     state.lastGps = { lat: p.lat, lon: p.lon, raw: p.raw };
+    if (!state.homeGps && p.lat != null && p.lon != null) {
+      state.homeGps = { lat: p.lat, lon: p.lon };
+      pushLog("GPS", "Ustawiono pozycję domu");
+    }
     renderLatest();
     updateMapFromGps(state.lastGps);
     addRow({ type: "GPS", lat: p.lat, lon: p.lon, ts: frameTs, raw: p.raw, message: "" });
@@ -346,6 +383,14 @@ function handleParsed(p) {
   if (p.type === "LOG") {
     addRow({ type: "LOG", ts: frameTs, message: p.message, raw: p.raw });
     pushLog("LOG", p.message || p.raw);
+    return;
+  }
+
+  if (p.type === "STATUS") {
+    state.status = p.value ?? 0;
+    renderLatest();
+    addRow({ type: "STATUS", ts: frameTs, message: `Status: ${state.status}`, raw: p.raw });
+    pushLog("STATUS", `Status CanSat: ${state.status}`);
     return;
   }
 
@@ -364,13 +409,14 @@ function normalizeBaseUrl(u) {
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
 
-async function httpFetchJson(path, { timeoutMs = 4000 } = {}) {
+async function httpFetchJson(query, { timeoutMs = 4000 } = {}) {
   const base = state.http.baseUrl;
   if (!base) throw new Error("Brak baseUrl");
+  const apiUrl = base.toLowerCase().endsWith(".php") ? base : `${base}/backend/api.php`;
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${base}${path}`, { signal: ctrl.signal, cache: "no-store" });
+    const res = await fetch(`${apiUrl}${query}`, { signal: ctrl.signal, cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } finally {
@@ -481,7 +527,7 @@ function ingestPollData(data) {
 async function fetchData() {
   const since = state.http.lastTimestamp;
   const sinceParam = since ? `?since_ts=${encodeURIComponent(since)}` : "";
-  const data = await httpFetchJson(`/backend/api.php${sinceParam}`);
+  const data = await httpFetchJson(`${sinceParam}`);
   ingestPollData(data || {});
 }
 
@@ -530,12 +576,14 @@ function disconnectHttp() {
 function clearAll() {
   state.lastDt = null;
   state.lastGps = null;
+  state.homeGps = null;
   state.http.lastTimestamp = null;
   state.rows = [];
   state.logLines = [];
   el.lastFrameTs.textContent = "—";
   el.lastMillis.textContent = "—";
   el.gpsText.textContent = "—";
+  el.distanceText.textContent = "—";
   el.rows.innerHTML = "";
   el.log.textContent = "";
   pathLatLngs.splice(0, pathLatLngs.length);
@@ -547,7 +595,7 @@ function clearAll() {
 function wireUi() {
   const savedHttp = localStorage.getItem("telemetry.httpBaseUrl");
   el.sourceMode.value = "http";
-  el.httpBaseUrl.value = savedHttp || "http://rpi-cansat.local/CanSat/cansat/page/backend/api.php";
+  el.httpBaseUrl.value = savedHttp || "http://localhost:2137";
 
   el.connect.addEventListener("click", () => {
     const base = el.httpBaseUrl.value.trim();
