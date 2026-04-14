@@ -3,7 +3,7 @@
 Script to read sensor data from serial port and insert into CanSat database
 Reads data in format:
 - DT|millis|temp_BMP|temp_SHT|hum_SHT|cot_SCD|air_SPG|metan|wartoscFotor
-- GPS|millis|latitude|longitude|distanceToHome|courseToHome|satellites
+- GPS|latitude|longitude|distanceToHome|courseToHome|AGL|satellites
 - DTP|refTEMP|press_BMP
 """
 
@@ -88,26 +88,26 @@ class SerialDataReader:
             return None
     
     def parse_gps_data(self, data):
-        """Parse GPS format: GPS|millis|latitude|longitude|distanceToHome|courseToHome|satellites"""
+        """Parse GPS format: GPS|latitude|longitude|distanceToHome|courseToHome|AGL|satellites"""
         try:
             parts = data.split('|')
-            if len(parts) != 8:
-                print(f"✗ GPS: Błędna liczba pól ({len(parts)}, oczekiwano 8)")
+            if len(parts) != 7:
+                print(f"✗ GPS: Błędna liczba pól ({len(parts)}, oczekiwano 7)")
                 return None
             
-            millis = int(parts[1])
-            latitude = float(parts[2])
-            longitude = float(parts[3])
-            distanceToHome = int(parts[4])
-            courseToHome = float(parts[5])
+            latitude = float(parts[1])
+            longitude = float(parts[2])
+            distanceToHome = int(parts[3])
+            courseToHome = float(parts[4])
+            AGL = float(parts[5])
             satellites = int(parts[6])
             
             return {
-                'millis': millis,
                 'latitude': latitude,
                 'longitude': longitude,
                 'distanceToHome': distanceToHome,
                 'courseToHome': courseToHome,
+                'AGL': AGL,
                 'satellites': satellites
             }
         except Exception as e:
@@ -118,8 +118,8 @@ class SerialDataReader:
         """Parse DTP format: DTP|refTEMP|press_BMP"""
         try:
             parts = data.split('|')
-            if len(parts) != 4:
-                print(f"✗ DTP: Błędna liczba pól ({len(parts)}, oczekiwano 4)")
+            if len(parts) != 3:
+                print(f"✗ DTP: Błędna liczba pól ({len(parts)}, oczekiwano 3)")
                 return None
             
             refTEMP = float(parts[1])
@@ -156,12 +156,12 @@ class SerialDataReader:
         """Insert GPS data into database"""
         try:
             cursor = self.db_conn.cursor()
-            query = """INSERT INTO GPS (millis, latitude, longitude, distanceToHome, courseToHome, satellites)
+            query = """INSERT INTO GPS (latitude, longitude, distanceToHome, courseToHome, AGL, satellites)
                        VALUES (%s, %s, %s, %s, %s, %s)"""
             
-            cursor.execute(query, (data['millis'], data['latitude'], data['longitude'],
+            cursor.execute(query, (data['latitude'], data['longitude'],
                                   data['distanceToHome'], data['courseToHome'],
-                                  data['satellites']))
+                                  data['AGL'], data['satellites']))
             self.db_conn.commit()
             cursor.close()
             self.stats['GPS'] += 1
