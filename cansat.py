@@ -5,6 +5,7 @@ Reads data in format:
 - DT|millis|temp_BMP|temp_SHT|hum_SHT|cot_SCD|air_SPG|metan|wartoscFotor
 - GPS|latitude|longitude|distanceToHome|courseToHome|AGL|satellites
 - DTP|refTEMP|press_BMP
+- LOG|anything here gets written to logs table
 """
 
 import serial
@@ -23,7 +24,7 @@ DB_CONFIG = {
 }
 
 # Serial port configuration
-SERIAL_PORT = '/dev/cu.usbmodem11301'  # Change to your serial port (COM3 on Windows, /dev/ttyUSB0 on Linux)
+SERIAL_PORT = ''  # Change to your serial port (COM3 on Windows, /dev/ttyUSB0 on Linux)
 BAUD_RATE = 115200
 
 class SerialDataReader:
@@ -33,7 +34,7 @@ class SerialDataReader:
         self.serial_conn = None
         self.db_conn = None
         self.running = False
-        self.stats = {'DT': 0, 'GPS': 0, 'DTP': 0, 'errors': 0}
+        self.stats = {'DT': 0, 'GPS': 0, 'DTP': 0, 'LOG': 0, 'errors': 0}
         
     def connect_serial(self):
         """Open serial connection"""
@@ -188,6 +189,38 @@ class SerialDataReader:
             print(f"✗ Błąd wstawienia DTP: {e}")
             self.stats['errors'] += 1
     
+    def parse_log_data(self, data):
+        """Parse LOG format: LOG|anything"""
+        try:
+            if not data.startswith('LOG|'):
+                return None
+            
+            log_content = data[4:].strip()  # Extract everything after 'LOG|'
+            if not log_content:
+                return None
+            
+            return {'logCONTENTS': log_content}
+        except Exception as e:
+            print(f"✗ LOG: Błąd parsowania: {e}")
+            return None
+    
+    def insert_log(self, data):
+        """Insert LOG data into database"""
+        try:
+            cursor = self.db_conn.cursor()
+            query = """INSERT INTO LOGS (logCONTENTS)
+                       VALUES (%s)"""
+            
+            cursor.execute(query, (data['logCONTENTS'],))
+            self.db_conn.commit()
+            cursor.close()
+            self.stats['LOG'] += 1
+            print(f"✓ LOG wstawiony: {data['logCONTENTS'][:30]}...")
+            
+        except Error as e:
+            print(f"✗ Błąd wstawienia LOG: {e}")
+            self.stats['errors'] += 1
+    
     def process_line(self, line):
         """Process a single line from serial port"""
         line = line.strip()
@@ -210,6 +243,11 @@ class SerialDataReader:
             data = self.parse_dtp_data(line)
             if data:
                 self.insert_dtp(data)
+        
+        elif line.startswith('LOG|'):
+            data = self.parse_log_data(line)
+            if data:
+                self.insert_log(data)
         
         else:
             print(f"✗ Nieznany format: {line[:20]}...")
@@ -268,6 +306,7 @@ class SerialDataReader:
         print(f"  DT wpisy:    {self.stats['DT']}")
         print(f"  GPS wpisy:   {self.stats['GPS']}")
         print(f"  DTP wpisy:   {self.stats['DTP']}")
+        print(f"  LOG wpisy:   {self.stats['LOG']}")
         print(f"  Błędy:       {self.stats['errors']}")
         print("="*60 + "\n")
 
