@@ -90,11 +90,6 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
 }
 
 function parseGpsLine(line) {
-  // Supported:
-  // GPS | lat=50.1234 | lon=19.9876
-  // GPS | 50.1234 | 19.9876
-  // GPS | ts=2026-03-25 12:34:56 | lat=50.1234 | lon=19.9876
-  // GPS | ts=2026-03-25 12:34:56 | 50.1234 | 19.9876
   const parts = splitPipes(line);
   if (parts[0] !== "GPS") return null;
 
@@ -135,8 +130,6 @@ function parseGpsLine(line) {
 function parseDtLine(line) {
   const parts = splitPipes(line);
   if (parts[0] !== "DT") return null;
-  // DT | millis() | temp_BMP | press_BMP | temp_SHT | hum_SHT | co2_SCD | air_SPG | foto
-  // DT | ts=2026-03-25 12:34:56 | millis() | temp_BMP | press_BMP | temp_SHT | hum_SHT | co2_SCD | air_SPG | foto
   let ts = null;
   let start = 1;
   const tsToken = parts[1] ? String(parts[1]) : "";
@@ -328,7 +321,7 @@ let pathLine;
 const pathLatLngs = [];
 
 function initMap() {
-  map = L.map("map", { zoomControl: true }).setView([52.237049, 21.017532], 6); // PL default
+  map = L.map("map", { zoomControl: true }).setView([52.237049, 21.017532], 6);
   L.tileLayer("http://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
@@ -440,7 +433,6 @@ function ingestPollData(data) {
   const newestDt = dtArr.length ? dtArr[dtArr.length - 1] : null;
   const newestGps = gpsArr.length ? gpsArr[gpsArr.length - 1] : null;
 
-  // Uaktualnij lastTimestamp jako max(ts) z DT i GPS.
   let maxTs = state.http.lastTimestamp;
   for (const r of dtArr) if (r?.ts && (!maxTs || cmpTs(maxTs, r.ts) < 0)) maxTs = r.ts;
   for (const r of gpsArr) if (r?.ts && (!maxTs || cmpTs(maxTs, r.ts) < 0)) maxTs = r.ts;
@@ -487,7 +479,6 @@ function ingestPollData(data) {
   }
 
   events.sort((a, b) => cmpTs(a.ts, b.ts));
-  // Batch rows to avoid re-rendering the whole table N times.
   for (const ev of events) {
     state.rows.unshift(ev);
     if (state.rows.length > MAX_ROWS) state.rows.pop();
@@ -512,13 +503,21 @@ function ingestPollData(data) {
   }
 
   if (newestGps) {
+    for (const gpsPoint of gpsArr) {
+      const gpsForPath = {
+        ts: gpsPoint.ts,
+        lat: toFiniteNum(gpsPoint.latitude),
+        lon: toFiniteNum(gpsPoint.longitude),
+        raw: "",
+      };
+      updateMapFromGps(gpsForPath);
+    }
     state.lastGps = {
       ts: newestGps.ts,
       lat: toFiniteNum(newestGps.latitude),
       lon: toFiniteNum(newestGps.longitude),
       raw: "",
     };
-    updateMapFromGps(state.lastGps);
   }
 
   renderLatest();
@@ -595,7 +594,7 @@ function clearAll() {
 function wireUi() {
   const savedHttp = localStorage.getItem("telemetry.httpBaseUrl");
   el.sourceMode.value = "http";
-  el.httpBaseUrl.value = savedHttp || "http://localhost:2137";
+  el.httpBaseUrl.value = savedHttp || `${window.location.origin}`;
 
   el.connect.addEventListener("click", () => {
     const base = el.httpBaseUrl.value.trim();
@@ -621,7 +620,6 @@ function wireUi() {
 
   el.clear.addEventListener("click", () => clearAll());
 
-  // drag & drop on whole page
   document.addEventListener("dragover", (e) => {
     e.preventDefault();
   });
@@ -639,3 +637,6 @@ createCards();
 initMap();
 wireUi();
 setConn("idle", "Brak połączenia");
+if (el.httpBaseUrl.value) {
+  connectHttp(el.httpBaseUrl.value);
+}

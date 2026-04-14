@@ -1,37 +1,106 @@
 <?php
 declare(strict_types=1);
 
-// Stateless HTTP endpoint.
-// Returns: { "dt": [...], "gps": [...] }
-// Only rows newer than GET parameter `since_ts` are returned.
-
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, max-age=0');
 header('Access-Control-Allow-Origin: *');
 
+$CONFIG = [
+  'DB_HOST' => getenv('DB_HOST') ?: '127.0.0.1',
+  'DB_PORT' => getenv('DB_PORT') ?: 3306,
+  'DB_USER' => getenv('DB_USER') ?: 'cansat',
+  'DB_PASSWORD' => getenv('DB_PASSWORD') ?: 'cansat',
+  'DB_NAME' => getenv('DB_NAME') ?: 'cansat',
+  'DT_TABLE' => 'DT',
+  'GPS_TABLE' => 'GPS',
+  'DTP_TABLE' => 'DTP',
+  'HISTORY_DT_LIMIT' => 200,
+  'HISTORY_GPS_LIMIT' => 50,
+  'INCR_LIMIT_DT' => 200,
+  'INCR_LIMIT_GPS' => 200,
+];
+
 function respond(int $code, array $payload): void {
   http_response_code($code);
-  echo json_encode($payload, JSON_UNESCAPED_UNICODE);
+  echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
   exit;
 }
 
+function safeTableName(string $table): string {
+  if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $table)) {
+    throw new RuntimeException("Invalid table name: {$table}");
+  }
+  return $table;
+}
+
+function asNullableString(mixed $value): ?string {
+  if ($value === null) {
+    return null;
+  }
+  $text = trim((string)$value);
+  return $text === '' ? null : $text;
+}
+
+function asNullableInt(mixed $value): ?int {
+  if ($value === null || $value === '') {
+    return null;
+  }
+  $int = filter_var($value, FILTER_VALIDATE_INT);
+  return $int === false ? null : (int)$int;
+}
+
+function asNullableFloat(mixed $value): ?float {
+  if ($value === null || $value === '') {
+    return null;
+  }
+  $float = filter_var($value, FILTER_VALIDATE_FLOAT);
+  return $float === false ? null : (float)$float;
+}
+
+function normalizeDtRow(array $row): array {
+  return [
+    'ts' => asNullableString($row['ts'] ?? null),
+    'millis' => asNullableInt($row['millis'] ?? null),
+    'temp_BMP' => asNullableFloat($row['temp_BMP'] ?? null),
+    'press_BMP' => asNullableFloat($row['press_BMP'] ?? null),
+    'temp_SHT' => asNullableFloat($row['temp_SHT'] ?? null),
+    'hum_SHT' => asNullableFloat($row['hum_SHT'] ?? null),
+    'co2_SCD' => asNullableInt($row['co2_SCD'] ?? null),
+    'air_SPG' => asNullableFloat($row['air_SPG'] ?? null),
+    'foto' => asNullableInt($row['foto'] ?? null),
+  ];
+}
+
+function normalizeGpsRow(array $row): array {
+  return [
+    'ts' => asNullableString($row['ts'] ?? null),
+    'latitude' => asNullableFloat($row['latitude'] ?? null),
+    'longitude' => asNullableFloat($row['longitude'] ?? null),
+    'distanceToHome' => asNullableInt($row['distanceToHome'] ?? null),
+    'courseToHome' => asNullableFloat($row['courseToHome'] ?? null),
+    'AGL' => asNullableFloat($row['AGL'] ?? null),
+    'satellites' => asNullableInt($row['satellites'] ?? null),
+  ];
+}
+
 try {
-  $sinceTs = isset($_GET['since_ts']) && trim((string)$_GET['since_ts']) !== '' ? (string)$_GET['since_ts'] : null;
+  $sinceTsRaw = isset($_GET['since_ts']) ? trim((string)$_GET['since_ts']) : '';
+  $sinceTs = $sinceTsRaw === '' ? null : $sinceTsRaw;
 
-  $DB_HOST = getenv('DB_HOST') ?: '127.0.0.1';
-  $DB_PORT = (int)(getenv('DB_PORT') ?: '3306');
-  $DB_USER = getenv('DB_USER') ?: 'cansat';
-  $DB_PASSWORD = getenv('DB_PASSWORD') ?: 'haslo';
-  $DB_NAME = getenv('DB_NAME') ?: 'cansat';
+  $DB_HOST = trim((string)$CONFIG['DB_HOST']);
+  $DB_PORT = max(1, (int)$CONFIG['DB_PORT']);
+  $DB_USER = trim((string)$CONFIG['DB_USER']);
+  $DB_PASSWORD = (string)$CONFIG['DB_PASSWORD'];
+  $DB_NAME = trim((string)$CONFIG['DB_NAME']);
 
-  $DT_TABLE = getenv('DT_TABLE') ?: 'DT';
-  $GPS_TABLE = getenv('GPS_TABLE') ?: 'GPS';
-  $DTP_TABLE = getenv('DTP_TABLE') ?: 'DTP';
+  $DT_TABLE = safeTableName(trim((string)$CONFIG['DT_TABLE']));
+  $GPS_TABLE = safeTableName(trim((string)$CONFIG['GPS_TABLE']));
+  $DTP_TABLE = safeTableName(trim((string)$CONFIG['DTP_TABLE']));
 
-  $HISTORY_DT_LIMIT = (int)(getenv('HISTORY_DT_LIMIT') ?: '200');
-  $HISTORY_GPS_LIMIT = (int)(getenv('HISTORY_GPS_LIMIT') ?: '50');
-  $INCR_LIMIT_DT = (int)(getenv('INCR_LIMIT_DT') ?: '200');
-  $INCR_LIMIT_GPS = (int)(getenv('INCR_LIMIT_GPS') ?: '200');
+  $HISTORY_DT_LIMIT = max(1, min(2000, (int)$CONFIG['HISTORY_DT_LIMIT']));
+  $HISTORY_GPS_LIMIT = max(1, min(2000, (int)$CONFIG['HISTORY_GPS_LIMIT']));
+  $INCR_LIMIT_DT = max(1, min(2000, (int)$CONFIG['INCR_LIMIT_DT']));
+  $INCR_LIMIT_GPS = max(1, min(2000, (int)$CONFIG['INCR_LIMIT_GPS']));
 
   if ($DB_NAME === '') {
     respond(500, ['error' => 'Missing DB_NAME env var']);
@@ -75,27 +144,47 @@ try {
     FROM {$GPS_TABLE} gps
   ";
 
+  $dtRows = [];
+  $gpsRows = [];
+  $warnings = [];
+
   if ($sinceTs === null) {
-    // Initial load: return last N rows (newest first in DB, then reverse to oldest->newest).
-    $stmtDT = $pdo->query($sqlDTSelect . " ORDER BY dt.TS DESC LIMIT {$HISTORY_DT_LIMIT}");
-    $dtRows = $stmtDT->fetchAll();
-    $dtRows = array_reverse($dtRows);
+    try {
+      $stmtDT = $pdo->query($sqlDTSelect . " ORDER BY dt.TS DESC LIMIT {$HISTORY_DT_LIMIT}");
+      $dtRows = array_map('normalizeDtRow', array_reverse($stmtDT->fetchAll()));
+    } catch (Throwable $e) {
+      $warnings[] = 'DT query failed: ' . $e->getMessage();
+    }
 
-    $stmtGPS = $pdo->query($sqlGPSSelect . " ORDER BY gps.TS DESC LIMIT {$HISTORY_GPS_LIMIT}");
-    $gpsRows = $stmtGPS->fetchAll();
-    $gpsRows = array_reverse($gpsRows);
+    try {
+      $stmtGPS = $pdo->query($sqlGPSSelect . " ORDER BY gps.TS DESC LIMIT {$HISTORY_GPS_LIMIT}");
+      $gpsRows = array_map('normalizeGpsRow', array_reverse($stmtGPS->fetchAll()));
+    } catch (Throwable $e) {
+      $warnings[] = 'GPS query failed: ' . $e->getMessage();
+    }
   } else {
-    // Incremental load.
-    $stmtDT = $pdo->prepare($sqlDTSelect . " WHERE dt.TS > ? ORDER BY dt.TS ASC LIMIT {$INCR_LIMIT_DT}");
-    $stmtDT->execute([$sinceTs]);
-    $dtRows = $stmtDT->fetchAll();
+    try {
+      $stmtDT = $pdo->prepare($sqlDTSelect . " WHERE dt.TS > ? ORDER BY dt.TS ASC LIMIT {$INCR_LIMIT_DT}");
+      $stmtDT->execute([$sinceTs]);
+      $dtRows = array_map('normalizeDtRow', $stmtDT->fetchAll());
+    } catch (Throwable $e) {
+      $warnings[] = 'DT query failed: ' . $e->getMessage();
+    }
 
-    $stmtGPS = $pdo->prepare($sqlGPSSelect . " WHERE gps.TS > ? ORDER BY gps.TS ASC LIMIT {$INCR_LIMIT_GPS}");
-    $stmtGPS->execute([$sinceTs]);
-    $gpsRows = $stmtGPS->fetchAll();
+    try {
+      $stmtGPS = $pdo->prepare($sqlGPSSelect . " WHERE gps.TS > ? ORDER BY gps.TS ASC LIMIT {$INCR_LIMIT_GPS}");
+      $stmtGPS->execute([$sinceTs]);
+      $gpsRows = array_map('normalizeGpsRow', $stmtGPS->fetchAll());
+    } catch (Throwable $e) {
+      $warnings[] = 'GPS query failed: ' . $e->getMessage();
+    }
   }
 
-  respond(200, ['dt' => $dtRows, 'gps' => $gpsRows]);
+  $payload = ['dt' => $dtRows, 'gps' => $gpsRows];
+  if (count($warnings) > 0) {
+    $payload['warnings'] = $warnings;
+  }
+  respond(200, $payload);
 } catch (Throwable $e) {
   respond(500, ['error' => $e->getMessage()]);
 }
