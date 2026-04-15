@@ -14,10 +14,13 @@ $CONFIG = [
   'DT_TABLE' => 'DT',
   'GPS_TABLE' => 'GPS',
   'DTP_TABLE' => 'DTP',
+  'LOGS_TABLE' => 'LOGS',
   'HISTORY_DT_LIMIT' => 200,
   'HISTORY_GPS_LIMIT' => 50,
+  'HISTORY_LOGS_LIMIT' => 100,
   'INCR_LIMIT_DT' => 200,
   'INCR_LIMIT_GPS' => 200,
+  'INCR_LIMIT_LOGS' => 100,
 ];
 
 function respond(int $code, array $payload): void {
@@ -83,6 +86,13 @@ function normalizeGpsRow(array $row): array {
   ];
 }
 
+function normalizeLogsRow(array $row): array {
+  return [
+    'ts' => asNullableString($row['ts'] ?? null),
+    'logCONTENTS' => asNullableString($row['logCONTENTS'] ?? null),
+  ];
+}
+
 try {
   $sinceTsRaw = isset($_GET['since_ts']) ? trim((string)$_GET['since_ts']) : '';
   $sinceTs = $sinceTsRaw === '' ? null : $sinceTsRaw;
@@ -96,11 +106,14 @@ try {
   $DT_TABLE = safeTableName(trim((string)$CONFIG['DT_TABLE']));
   $GPS_TABLE = safeTableName(trim((string)$CONFIG['GPS_TABLE']));
   $DTP_TABLE = safeTableName(trim((string)$CONFIG['DTP_TABLE']));
+  $LOGS_TABLE = safeTableName(trim((string)$CONFIG['LOGS_TABLE']));
 
   $HISTORY_DT_LIMIT = max(1, min(2000, (int)$CONFIG['HISTORY_DT_LIMIT']));
   $HISTORY_GPS_LIMIT = max(1, min(2000, (int)$CONFIG['HISTORY_GPS_LIMIT']));
+  $HISTORY_LOGS_LIMIT = max(1, min(2000, (int)$CONFIG['HISTORY_LOGS_LIMIT']));
   $INCR_LIMIT_DT = max(1, min(2000, (int)$CONFIG['INCR_LIMIT_DT']));
   $INCR_LIMIT_GPS = max(1, min(2000, (int)$CONFIG['INCR_LIMIT_GPS']));
+  $INCR_LIMIT_LOGS = max(1, min(2000, (int)$CONFIG['INCR_LIMIT_LOGS']));
 
   if ($DB_NAME === '') {
     respond(500, ['error' => 'Missing DB_NAME env var']);
@@ -144,8 +157,16 @@ try {
     FROM {$GPS_TABLE} gps
   ";
 
+  $sqlLogsSelect = "
+    SELECT
+      logs.TS as ts,
+      logs.logCONTENTS as logCONTENTS
+    FROM {$LOGS_TABLE} logs
+  ";
+
   $dtRows = [];
   $gpsRows = [];
+  $logsRows = [];
   $warnings = [];
 
   if ($sinceTs === null) {
@@ -161,6 +182,13 @@ try {
       $gpsRows = array_map('normalizeGpsRow', array_reverse($stmtGPS->fetchAll()));
     } catch (Throwable $e) {
       $warnings[] = 'GPS query failed: ' . $e->getMessage();
+    }
+
+    try {
+      $stmtLogs = $pdo->query($sqlLogsSelect . " ORDER BY logs.TS DESC LIMIT {$HISTORY_LOGS_LIMIT}");
+      $logsRows = array_map('normalizeLogsRow', array_reverse($stmtLogs->fetchAll()));
+    } catch (Throwable $e) {
+      $warnings[] = 'LOGS query failed: ' . $e->getMessage();
     }
   } else {
     try {
@@ -178,9 +206,17 @@ try {
     } catch (Throwable $e) {
       $warnings[] = 'GPS query failed: ' . $e->getMessage();
     }
+
+    try {
+      $stmtLogs = $pdo->prepare($sqlLogsSelect . " WHERE logs.TS > ? ORDER BY logs.TS ASC LIMIT {$INCR_LIMIT_LOGS}");
+      $stmtLogs->execute([$sinceTs]);
+      $logsRows = array_map('normalizeLogsRow', $stmtLogs->fetchAll());
+    } catch (Throwable $e) {
+      $warnings[] = 'LOGS query failed: ' . $e->getMessage();
+    }
   }
 
-  $payload = ['dt' => $dtRows, 'gps' => $gpsRows];
+  $payload = ['dt' => $dtRows, 'gps' => $gpsRows, 'logs' => $logsRows];
   if (count($warnings) > 0) {
     $payload['warnings'] = $warnings;
   }
