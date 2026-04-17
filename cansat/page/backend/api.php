@@ -15,6 +15,7 @@ $CONFIG = [
   'GPS_TABLE' => 'GPS',
   'DTP_TABLE' => 'DTP',
   'LOGS_TABLE' => 'LOGS',
+  'STATUS_TABLE' => 'STATUS',
   'HISTORY_DT_LIMIT' => 200,
   'HISTORY_GPS_LIMIT' => 50,
   'HISTORY_LOGS_LIMIT' => 100,
@@ -93,6 +94,13 @@ function normalizeLogsRow(array $row): array {
   ];
 }
 
+function normalizeStatusRow(array $row): array {
+  return [
+    'ts' => asNullableString($row['ts'] ?? null),
+    'value' => asNullableInt($row['value'] ?? null),
+  ];
+}
+
 try {
   $sinceTsRaw = isset($_GET['since_ts']) ? trim((string)$_GET['since_ts']) : '';
   $sinceTs = $sinceTsRaw === '' ? null : $sinceTsRaw;
@@ -107,6 +115,7 @@ try {
   $GPS_TABLE = safeTableName(trim((string)$CONFIG['GPS_TABLE']));
   $DTP_TABLE = safeTableName(trim((string)$CONFIG['DTP_TABLE']));
   $LOGS_TABLE = safeTableName(trim((string)$CONFIG['LOGS_TABLE']));
+  $STATUS_TABLE = safeTableName(trim((string)$CONFIG['STATUS_TABLE']));
 
   $HISTORY_DT_LIMIT = max(1, min(2000, (int)$CONFIG['HISTORY_DT_LIMIT']));
   $HISTORY_GPS_LIMIT = max(1, min(2000, (int)$CONFIG['HISTORY_GPS_LIMIT']));
@@ -164,9 +173,17 @@ try {
     FROM {$LOGS_TABLE} logs
   ";
 
+  $sqlStatusSelect = "
+    SELECT
+      s.TS as ts,
+      s.value as value
+    FROM {$STATUS_TABLE} s
+  ";
+
   $dtRows = [];
   $gpsRows = [];
   $logsRows = [];
+  $statusRows = [];
   $warnings = [];
 
   if ($sinceTs === null) {
@@ -189,6 +206,13 @@ try {
       $logsRows = array_map('normalizeLogsRow', array_reverse($stmtLogs->fetchAll()));
     } catch (Throwable $e) {
       $warnings[] = 'LOGS query failed: ' . $e->getMessage();
+    }
+
+    try {
+      $stmtStatus = $pdo->query($sqlStatusSelect . " ORDER BY s.TS DESC LIMIT 1");
+      $statusRows = array_map('normalizeStatusRow', $stmtStatus->fetchAll());
+    } catch (Throwable $e) {
+      $warnings[] = 'STATUS query failed: ' . $e->getMessage();
     }
   } else {
     try {
@@ -214,9 +238,20 @@ try {
     } catch (Throwable $e) {
       $warnings[] = 'LOGS query failed: ' . $e->getMessage();
     }
+
+    try {
+      $stmtStatus = $pdo->prepare($sqlStatusSelect . " WHERE s.TS > ? ORDER BY s.TS DESC LIMIT 1");
+      $stmtStatus->execute([$sinceTs]);
+      $statusRows = array_map('normalizeStatusRow', $stmtStatus->fetchAll());
+    } catch (Throwable $e) {
+      $warnings[] = 'STATUS query failed: ' . $e->getMessage();
+    }
   }
 
   $payload = ['dt' => $dtRows, 'gps' => $gpsRows, 'logs' => $logsRows];
+  if (count($statusRows) > 0 && $statusRows[count($statusRows) - 1]['value'] !== null) {
+    $payload['status'] = $statusRows[count($statusRows) - 1]['value'];
+  }
   if (count($warnings) > 0) {
     $payload['warnings'] = $warnings;
   }

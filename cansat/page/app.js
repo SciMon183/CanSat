@@ -6,6 +6,7 @@ const MAX_LOG_LINES = 300;
 const SENSOR_SCHEMA = [
   { key: "temp_BMP", label: "Temperatura BMP", unit: "°C", hint: "temp_BMP" },
   { key: "press_BMP", label: "Ciśnienie BMP", unit: "hPa", hint: "press_BMP" },
+  { key: "altitude", label: "Wysokość z ciśnienia", unit: "m", hint: "press_BMP → wysokość" },
   { key: "temp_SHT", label: "Temperatura SHT", unit: "°C", hint: "temp_SHT" },
   { key: "hum_SHT", label: "Wilgotność SHT", unit: "%", hint: "hum_SHT" },
   { key: "co2_SCD", label: "CO₂ SCD", unit: "ppm", hint: "co2_SCD" },
@@ -36,6 +37,7 @@ const el = {
   log: document.getElementById("log"),
   gpsText: document.getElementById("gpsText"),
   distanceText: document.getElementById("distanceText"),
+  homeText: document.getElementById("homeText"),
   statusText: document.getElementById("statusText"),
   fileInput: document.getElementById("fileInput"),
   clear: document.getElementById("clear"),
@@ -69,6 +71,18 @@ function toNumberMaybe(v) {
   if (isNA(v)) return null;
   const n = Number(String(v).trim().replace(",", "."));
   return Number.isFinite(n) ? n : null;
+}
+
+function altitudeFromPressure(pressureHpa) {
+  const p = toNumberMaybe(pressureHpa);
+  if (p == null || p <= 0) return null;
+  const P0 = 1013.25;
+  return 44330 * (1 - Math.pow(p / P0, 1 / 5.255));
+}
+
+function altitudeText(pressureHpa) {
+  const alt = altitudeFromPressure(pressureHpa);
+  return alt == null ? "—" : alt.toFixed(1);
 }
 
 function splitPipes(line) {
@@ -237,6 +251,7 @@ function renderLatest() {
     el.lastMillis.textContent = fmtValue(dt.millis).text;
     setCardValue("temp_BMP", dt.temp_BMP, "°C");
     setCardValue("press_BMP", dt.press_BMP, "hPa");
+    setCardValue("altitude", altitudeText(dt.press_BMP), "m");
     setCardValue("temp_SHT", dt.temp_SHT, "°C");
     setCardValue("hum_SHT", dt.hum_SHT, "%");
     setCardValue("co2_SCD", dt.co2_SCD, "ppm");
@@ -261,7 +276,13 @@ function renderLatest() {
     el.distanceText.textContent = "—";
   }
 
-  el.statusText.textContent = state.status;
+  if (el.homeText) {
+    el.homeText.textContent = state.homeGps
+      ? `${state.homeGps.lat.toFixed(6)}, ${state.homeGps.lon.toFixed(6)}`
+      : "—";
+  }
+  el.statusText.dataset.status = state.status;
+  updateCompass();
 }
 
 function addRow(row) {
@@ -300,6 +321,7 @@ function renderRows() {
       td(r.millis ?? "—"),
       td(r.temp_BMP ?? "—"),
       td(r.press_BMP ?? "—"),
+      td(r.type === "DT" ? altitudeText(r.press_BMP) : "—"),
       td(r.temp_SHT ?? "—"),
       td(r.hum_SHT ?? "—"),
       td(r.co2_SCD ?? "—"),
@@ -315,8 +337,48 @@ function renderRows() {
   }
 }
 
+function bearingTo(lat1, lon1, lat2, lon2) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLon = toRad(lon2 - lon1);
+  const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+  const x =
+    Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+  const brng = (Math.atan2(y, x) * 180) / Math.PI;
+  return (brng + 360) % 360;
+}
+
+function updateCompass() {
+  const compassWrap = document.getElementById("compassWrap");
+  const compassArrow = document.getElementById("compassArrow");
+  const compassBearing = document.getElementById("compassBearing");
+  const compassDist = document.getElementById("compassDist");
+  if (!compassWrap) return;
+
+  const cur = state.lastGps;
+  const home = state.homeGps;
+
+  if (!cur || cur.lat == null || cur.lon == null || !home) {
+    compassBearing.textContent = "—";
+    compassDist.textContent = home ? "Brak pozycji GPS" : "Brak pozycji domu";
+    compassArrow.style.transform = "rotate(0deg)";
+    compassWrap.dataset.active = "false";
+    return;
+  }
+
+  const bearing = bearingTo(cur.lat, cur.lon, home.lat, home.lon);
+  const dist = haversineDistance(home.lat, home.lon, cur.lat, cur.lon);
+  const distText = dist < 1 ? `${(dist * 1000).toFixed(0)} m` : `${dist.toFixed(2)} km`;
+
+  compassArrow.style.transform = `rotate(${bearing.toFixed(1)}deg)`;
+  compassBearing.textContent = `${bearing.toFixed(0)}°`;
+  compassDist.textContent = `Dom: ${distText}`;
+  compassWrap.dataset.active = "true";
+}
+
 let map;
 let marker;
+let homeMarker;
 let pathLine;
 const pathLatLngs = [];
 
@@ -331,6 +393,14 @@ function initMap() {
   marker.addTo(map);
   marker.bindPopup("Pozycja CanSat").openPopup();
 
+  const homeIcon = L.divIcon({
+    className: "",
+    html: '<div class="home-marker">🏠</div>',
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
+  homeMarker = L.marker([0, 0], { icon: homeIcon, draggable: false, interactive: false });
+
   pathLine = L.polyline([], { color: "#2563eb", weight: 3, opacity: 0.8 }).addTo(map);
 }
 
@@ -343,6 +413,13 @@ function updateMapFromGps(gps) {
   if (pathLatLngs.length > 2000) pathLatLngs.splice(0, pathLatLngs.length - 2000);
   pathLine.setLatLngs(pathLatLngs);
   map.setView(ll, Math.max(map.getZoom(), 14), { animate: true });
+
+  // Place home marker the first time homeGps is known
+  if (state.homeGps && !map.hasLayer(homeMarker)) {
+    homeMarker.setLatLng([state.homeGps.lat, state.homeGps.lon]);
+    homeMarker.addTo(map);
+    homeMarker.bindPopup(`Dom: ${state.homeGps.lat.toFixed(6)}, ${state.homeGps.lon.toFixed(6)}`);
+  }
 }
 
 function handleParsed(p) {
@@ -420,6 +497,15 @@ async function httpFetchJson(query, { timeoutMs = 4000 } = {}) {
 function ingestPollData(data) {
   const dtArr = Array.isArray(data?.dt) ? data.dt : [];
   const gpsArr = Array.isArray(data?.gps) ? data.gps : [];
+
+  // Handle STATUS from API
+  if (data?.status != null) {
+    const newStatus = Number(data.status);
+    if (Number.isFinite(newStatus) && newStatus !== state.status) {
+      state.status = newStatus;
+      pushLog("STATUS", `Status CanSat: ${state.status}`);
+    }
+  }
 
   const cmpTs = (a, b) => String(a ?? "").localeCompare(String(b ?? ""));
   const toFiniteNum = (v) => {
@@ -504,10 +590,16 @@ function ingestPollData(data) {
 
   if (newestGps) {
     for (const gpsPoint of gpsArr) {
+      const lat = toFiniteNum(gpsPoint.latitude);
+      const lon = toFiniteNum(gpsPoint.longitude);
+      if (!state.homeGps && lat != null && lon != null) {
+        state.homeGps = { lat, lon };
+        pushLog("GPS", `Ustawiono pozycję domu: ${lat.toFixed(6)}, ${lon.toFixed(6)}`);
+      }
       const gpsForPath = {
         ts: gpsPoint.ts,
-        lat: toFiniteNum(gpsPoint.latitude),
-        lon: toFiniteNum(gpsPoint.longitude),
+        lat,
+        lon,
         raw: "",
       };
       updateMapFromGps(gpsForPath);
@@ -583,10 +675,12 @@ function clearAll() {
   el.lastMillis.textContent = "—";
   el.gpsText.textContent = "—";
   el.distanceText.textContent = "—";
+  if (el.homeText) el.homeText.textContent = "—";
   el.rows.innerHTML = "";
   el.log.textContent = "";
   pathLatLngs.splice(0, pathLatLngs.length);
   if (pathLine) pathLine.setLatLngs([]);
+  if (homeMarker && map && map.hasLayer(homeMarker)) homeMarker.remove();
   renderLatest();
   pushLog("SYS", "Wyczyszczono dane");
 }

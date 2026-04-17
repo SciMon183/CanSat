@@ -84,6 +84,10 @@
           <h2>Mapa</h2>
           <div class="meta">
             <div class="meta__item">
+              <span class="meta__label">Pozycja domu</span>
+              <span class="meta__value" id="homeText">—</span>
+            </div>
+            <div class="meta__item">
               <span class="meta__label">GPS</span>
               <span class="meta__value" id="gpsText">—</span>
             </div>
@@ -98,6 +102,25 @@
           </div>
         </div>
         <div id="map" class="map" role="img" aria-label="Mapa z pozycją CanSat"></div>
+        <div class="compass-wrap" id="compassWrap">
+          <div class="compass" id="compass" title="Kierunek do domu">
+            <div class="compass__ring">
+              <span class="compass__label compass__label--n">N</span>
+              <span class="compass__label compass__label--e">E</span>
+              <span class="compass__label compass__label--s">S</span>
+              <span class="compass__label compass__label--w">W</span>
+              <div class="compass__arrow" id="compassArrow">
+                <div class="compass__arrow-head"></div>
+                <div class="compass__arrow-tail"></div>
+              </div>
+              <div class="compass__center"></div>
+            </div>
+            <div class="compass__info">
+              <div class="compass__bearing" id="compassBearing">—</div>
+              <div class="compass__dist" id="compassDist">Brak pozycji domu</div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section class="panel panel--wide">
@@ -118,6 +141,7 @@
                   <th>millis()</th>
                   <th>temp_BMP (°C)</th>
                   <th>press_BMP (hPa)</th>
+                  <th>Wysokość (m)</th>
                   <th>temp_SHT (°C)</th>
                   <th>hum_SHT (%)</th>
                   <th>co2_SCD (ppm)</th>
