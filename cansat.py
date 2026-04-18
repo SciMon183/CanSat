@@ -24,7 +24,7 @@ DB_CONFIG = {
 }
 
 # Serial port configuration
-SERIAL_PORT = ''  # Change to your serial port (COM3 on Windows, /dev/ttyUSB0 on Linux)
+SERIAL_PORT = '/dev/tty.usbmodem1401'  # Change to your serial port (COM3 on Windows, /dev/ttyUSB0 on Linux)
 BAUD_RATE = 115200
 
 class SerialDataReader:
