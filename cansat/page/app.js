@@ -73,10 +73,12 @@ function toNumberMaybe(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-function altitudeFromPressure(pressureHpa) {
-  const p = toNumberMaybe(pressureHpa);
+function altitudeFromPressure(pressurePa) {
+  const p = toNumberMaybe(pressurePa);
   if (p == null || p <= 0) return null;
-  const P0 = 1013.25;
+
+  const P0 = 101325; // Pa
+
   return 44330 * (1 - Math.pow(p / P0, 1 / 5.255));
 }
 
