@@ -499,6 +499,7 @@ async function httpFetchJson(query, { timeoutMs = 4000 } = {}) {
 function ingestPollData(data) {
   const dtArr = Array.isArray(data?.dt) ? data.dt : [];
   const gpsArr = Array.isArray(data?.gps) ? data.gps : [];
+  const logsArr = Array.isArray(data?.logs) ? data.logs : [];
 
   // Handle STATUS from API
   if (data?.status != null) {
@@ -517,6 +518,7 @@ function ingestPollData(data) {
 
   dtArr.sort((x, y) => cmpTs(x.ts, y.ts));
   gpsArr.sort((x, y) => cmpTs(x.ts, y.ts));
+  logsArr.sort((x, y) => cmpTs(x.ts, y.ts));
 
   const newestDt = dtArr.length ? dtArr[dtArr.length - 1] : null;
   const newestGps = gpsArr.length ? gpsArr[gpsArr.length - 1] : null;
@@ -524,6 +526,7 @@ function ingestPollData(data) {
   let maxTs = state.http.lastTimestamp;
   for (const r of dtArr) if (r?.ts && (!maxTs || cmpTs(maxTs, r.ts) < 0)) maxTs = r.ts;
   for (const r of gpsArr) if (r?.ts && (!maxTs || cmpTs(maxTs, r.ts) < 0)) maxTs = r.ts;
+  for (const r of logsArr) if (r?.ts && (!maxTs || cmpTs(maxTs, r.ts) < 0)) maxTs = r.ts;
   if (maxTs) state.http.lastTimestamp = maxTs;
 
   const events = [];
@@ -562,6 +565,24 @@ function ingestPollData(data) {
       lat,
       lon,
       message: "",
+      raw: "",
+    });
+  }
+  for (const log of logsArr) {
+    events.push({
+      type: "LOG",
+      ts: log.ts,
+      millis: null,
+      temp_BMP: null,
+      press_BMP: null,
+      temp_SHT: null,
+      hum_SHT: null,
+      co2_SCD: null,
+      air_SPG: null,
+      foto: null,
+      lat: null,
+      lon: null,
+      message: log.logCONTENTS || "",
       raw: "",
     });
   }
