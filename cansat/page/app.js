@@ -5,7 +5,7 @@ const MAX_LOG_LINES = 300;
 
 const SENSOR_SCHEMA = [
   { key: "temp_BMP", label: "Temperatura BMP", unit: "°C", hint: "temp_BMP" },
-  { key: "press_BMP", label: "Ciśnienie BMP", unit: "hPa", hint: "press_BMP" },
+  { key: "press_BMP", label: "Ciśnienie BMP", unit: "Pa", hint: "press_BMP" },
   { key: "altitude", label: "Wysokość z ciśnienia", unit: "m", hint: "press_BMP → wysokość" },
   { key: "temp_SHT", label: "Temperatura SHT", unit: "°C", hint: "temp_SHT" },
   { key: "hum_SHT", label: "Wilgotność SHT", unit: "%", hint: "hum_SHT" },
@@ -250,8 +250,8 @@ function renderLatest() {
     el.lastFrameTs.textContent = dt.ts ?? "—";
     el.lastMillis.textContent = fmtValue(dt.millis).text;
     setCardValue("temp_BMP", dt.temp_BMP, "°C");
-    setCardValue("press_BMP", dt.press_BMP, "hPa");
-    setCardValue("altitude", altitudeText(dt.press_BMP), "m");
+    setCardValue("press_BMP", dt.press_BMP, "Pa");
+    // setCardValue("altitude", altitudeText(dt.press_BMP), "m");
     setCardValue("temp_SHT", dt.temp_SHT, "°C");
     setCardValue("hum_SHT", dt.hum_SHT, "%");
     setCardValue("co2_SCD", dt.co2_SCD, "ppm");
